@@ -123,6 +123,9 @@ def build_grid(pois, grid_size: int = 50, weights: dict[str, float] | None = Non
 
 
 def save_grid_overlay(grid, output_path: str = "poi_overlay.png"):
+	# ensure parent directory exists
+	output_path = str(output_path)
+	Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 	flipped = np.flipud(grid)
 	plt.imsave(output_path, flipped, cmap="hot")
 	return output_path
@@ -155,8 +158,8 @@ def build_leaflet_map(
 	bounds,
 	pois,
 	overlay_opacity: float = 0.45,
-	map_output_path: str = "poi_map.html",
-	overlay_output_path: str = "poi_overlay.png",
+	map_output_path: str = "generated/poi_map.html",
+	overlay_output_path: str = "generated/poi_overlay.png",
 ):
 	minx, miny, maxx, maxy = bounds
 	center_lat = (miny + maxy) / 2
@@ -176,6 +179,8 @@ def build_leaflet_map(
 	add_poi_markers(map_view, pois)
 	folium.LayerControl(collapsed=False).add_to(map_view)
 	map_view.fit_bounds([[miny, minx], [maxy, maxx]])
+	# ensure parent directory for the map exists
+	Path(map_output_path).parent.mkdir(parents=True, exist_ok=True)
 	map_view.save(map_output_path)
 	return map_output_path, overlay_path
 
@@ -187,8 +192,8 @@ def main():
 	parser.add_argument("--distance-meters", type=int, default=1000)
 	parser.add_argument("--requests-timeout", type=int, default=60)
 	parser.add_argument("--overlay-opacity", type=float, default=0.45)
-	parser.add_argument("--map-output", default="poi_map.html")
-	parser.add_argument("--overlay-output", default="poi_overlay.png")
+	parser.add_argument("--map-output", default="generated/poi_map.html")
+	parser.add_argument("--overlay-output", default="generated/poi_overlay.png")
 	args = parser.parse_args()
 
 	ox.settings.requests_timeout = args.requests_timeout
