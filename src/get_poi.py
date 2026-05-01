@@ -20,6 +20,8 @@ import osmnx as ox
 import pandas as pd
 import requests
 
+from visualization import create_poi_map, TYPE_COLORS
+
 
 DEFAULT_TAGS = {
 	"amenity": True,
@@ -123,7 +125,6 @@ def build_grid(pois, grid_size: int = 50, weights: dict[str, float] | None = Non
 
 
 def save_grid_overlay(grid, output_path: str = "poi_overlay.png"):
-	# ensure parent directory exists
 	output_path = str(output_path)
 	Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 	flipped = np.flipud(grid)
@@ -152,39 +153,6 @@ def add_poi_markers(map_view, pois):
 	return marker_layer
 
 
-def build_leaflet_map(
-	place: str,
-	grid,
-	bounds,
-	pois,
-	overlay_opacity: float = 0.45,
-	map_output_path: str = "generated/poi_map.html",
-	overlay_output_path: str = "generated/poi_overlay.png",
-):
-	minx, miny, maxx, maxy = bounds
-	center_lat = (miny + maxy) / 2
-	center_lon = (minx + maxx) / 2
-
-	map_view = folium.Map(location=[center_lat, center_lon], zoom_start=14, tiles="CartoDB positron")
-	overlay_path = save_grid_overlay(grid, overlay_output_path)
-	folium.raster_layers.ImageOverlay(
-		name="POI grid",
-		image=str(Path(overlay_path).resolve()),
-		bounds=[[miny, minx], [maxy, maxx]],
-		opacity=overlay_opacity,
-		interactive=False,
-		cross_origin=False,
-		zindex=1,
-	).add_to(map_view)
-	add_poi_markers(map_view, pois)
-	folium.LayerControl(collapsed=False).add_to(map_view)
-	map_view.fit_bounds([[miny, minx], [maxy, maxx]])
-	# ensure parent directory for the map exists
-	Path(map_output_path).parent.mkdir(parents=True, exist_ok=True)
-	map_view.save(map_output_path)
-	return map_output_path, overlay_path
-
-
 def main():
 	parser = argparse.ArgumentParser(description="Build a POI density grid from OpenStreetMap data.")
 	parser.add_argument("place", nargs="?", default="Chisinau, Moldova")
@@ -211,11 +179,11 @@ def main():
 	print(f"Filtered POIs: {len(pois)}")
 
 	grid, bounds = build_grid(pois, grid_size=args.grid_size)
-	map_output_path, overlay_output_path = build_leaflet_map(
-		args.place,
+	map_output_path, overlay_output_path = create_poi_map(
 		grid,
 		bounds,
 		pois,
+		args.place,
 		overlay_opacity=args.overlay_opacity,
 		map_output_path=args.map_output,
 		overlay_output_path=args.overlay_output,
