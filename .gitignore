@@ -224,3 +224,6 @@ __marimo__/
 cache
 
 .DS_Store
+
+# Downloaded dataset files
+data/dataset/
