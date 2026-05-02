@@ -92,7 +92,7 @@ def draw_overlay(frame: np.ndarray, label: str, confidence: float, fps: float) -
 
 
 def main() -> None:
-    model_path = Path(__file__).with_name("best_resnet50.pth")
+    model_path = Path(__file__).resolve().parents[2] / "models" / "best_resnet50.pth"
     if not model_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
@@ -129,7 +129,7 @@ def main() -> None:
             display_confidence = float(np.mean(recent_confidences))
 
             current_time = cv2.getTickCount()
-            fps = ticks_per_second / max(current_time - previous_time, 0)
+            fps = ticks_per_second / max(current_time - previous_time, 1)
             previous_time = current_time
 
             annotated_frame = draw_overlay(frame, display_label, display_confidence, fps)
