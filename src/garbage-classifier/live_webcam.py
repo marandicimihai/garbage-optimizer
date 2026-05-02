@@ -1,125 +1,145 @@
-#!/usr/bin/env python3
-import argparse
-from pathlib import Path
-import time
-
 import cv2
 import numpy as np
-from PIL import Image
-
 import torch
+import torch.nn as nn
 from torchvision import models, transforms
+from pathlib import Path
+from collections import deque
 
 
-def list_cameras():
-    """List all available cameras on the system."""
-    available_cameras = []
-    for i in range(10):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            available_cameras.append(i)
-            cap.release()
-    return available_cameras
+DEFAULT_CLASS_NAMES = [
+    "battery",
+    "biological",
+    "cardboard",
+    "clothes",
+    "glass",
+    "metal",
+    "paper",
+    "plastic",
+    "shoes",
+    "trash",
+]
 
-
-def load_checkpoint(checkpoint_path, device):
-    data = torch.load(checkpoint_path, map_location=device)
-    class_names = data.get("class_names") if isinstance(data, dict) else None
-    state_dict = data.get("model_state") if isinstance(data, dict) else data
-    if state_dict is None:
-        raise RuntimeError(f"No model state found in {checkpoint_path}")
-    return state_dict, class_names
-
-
-def build_model(num_classes, device, state_dict=None):
-    model = models.mobilenet_v2(weights=None)
-    model.classifier = torch.nn.Sequential(
-        torch.nn.Linear(model.last_channel, 256),
-        torch.nn.ReLU(),
-        torch.nn.Dropout(0.3),
-        torch.nn.Linear(256, num_classes),
+def build_model(num_classes: int) -> nn.Module:
+    model = models.resnet50(weights=None)
+    num_features = model.fc.in_features
+    model.fc = nn.Sequential(
+        nn.Linear(num_features, 512),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(512, num_classes),
     )
-    if state_dict is not None:
-        cleaned = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        model.load_state_dict(cleaned)
+    return model
+
+
+def load_model(model_path: Path, device: torch.device, class_names: list[str]) -> nn.Module:
+    model = build_model(len(class_names))
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     return model
 
 
-def preprocess_frame(frame):
-    image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    return transform(image).unsqueeze(0)
+def make_transform(image_size: int) -> transforms.Compose:
+    return transforms.Compose(
+        [
+            transforms.ToPILImage(),
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+        ]
+    )
 
 
-def predict_frame(model, device, input_tensor):
-    input_tensor = input_tensor.to(device)
+def predict_frame(model: nn.Module, frame_bgr: np.ndarray, device: torch.device, transform, class_names: list[str]):
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    input_tensor = transform(frame_rgb).unsqueeze(0).to(device)
+
     with torch.no_grad():
-        logits = model(input_tensor)
-        probs = torch.nn.functional.softmax(logits, dim=1)
-        confidence, index = torch.max(probs, dim=1)
-    return index.item(), float(confidence.item())
+        outputs = model(input_tensor)
+        probabilities = torch.softmax(outputs, dim=1)[0]
+        confidence, predicted_idx = torch.max(probabilities, dim=0)
+
+    predicted_class = class_names[int(predicted_idx.item())]
+    return predicted_class, float(confidence.item())
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Live webcam classification")
-    script_dir = Path(__file__).parent
-    default_checkpoint = script_dir / "garbage_model.pth"
-    parser.add_argument("--checkpoint", "-c", type=Path, default=default_checkpoint, help="Path to model checkpoint")
-    parser.add_argument("--camera", "-k", type=int, default=1, help="Camera index (default: 1)")
-    parser.add_argument("--device", "-d", default=None, help="torch device (cpu, mps, cuda). Auto-detected by default")
-    parser.add_argument("--list-cameras", action="store_true", help="List available cameras and exit")
-    args = parser.parse_args()
+def draw_overlay(frame: np.ndarray, label: str, confidence: float, fps: float) -> np.ndarray:
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (frame.shape[1], 72), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+    cv2.putText(
+        frame,
+        f"Prediction: {label}",
+        (16, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.85,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        f"Confidence: {confidence:.2%}   FPS: {fps:.1f}",
+        (16, 58),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (200, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return frame
 
-    # List cameras if requested
-    available = list_cameras()
-    if args.list_cameras:
-        print(f"Available cameras: {available}")
-        return
-    
-    print(f"Using camera index: {args.camera}")
 
-    device = torch.device(args.device) if args.device else torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
+def main() -> None:
+    model_path = Path(__file__).with_name("best_resnet50.pth")
+    if not model_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
-    state_dict, class_names = load_checkpoint(args.checkpoint, device)
-    if class_names is None:
-        raise RuntimeError("Checkpoint does not include `class_names`. Save file must contain class_names list.")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(model_path, device, DEFAULT_CLASS_NAMES)
+    transform = make_transform(224)
 
-    model = build_model(len(class_names), device, state_dict=state_dict)
+    camera_idx = 1
+    print(f"Using camera {camera_idx}")
 
-    cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera {args.camera}")
+    capture = cv2.VideoCapture(camera_idx)
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open camera {camera_idx}")
 
-    fps_time = time.time()
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    recent_predictions: deque[str] = deque(maxlen=7)
+    recent_confidences: deque[float] = deque(maxlen=7)
 
-        input_tensor = preprocess_frame(frame)
-        index, confidence = predict_frame(model, device, input_tensor)
-        label = class_names[index]
+    previous_time = cv2.getTickCount()
+    ticks_per_second = cv2.getTickFrequency()
 
-        text = f"{label}: {confidence*100:.1f}%"
-        cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 220, 0), 2)
+    print("Press q to quit.")
 
-        now = time.time()
-        fps = 1.0 / (now - fps_time) if now != fps_time else 0.0
-        fps_time = now
-        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
 
-        cv2.imshow("Live Classification", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+            label, confidence = predict_frame(model, frame, device, transform, DEFAULT_CLASS_NAMES)
+            recent_predictions.append(label)
+            recent_confidences.append(confidence)
 
-    cap.release()
-    cv2.destroyAllWindows()
+            display_label = max(set(recent_predictions), key=recent_predictions.count)
+            display_confidence = float(np.mean(recent_confidences))
+
+            current_time = cv2.getTickCount()
+            fps = ticks_per_second / max(current_time - previous_time, 0)
+            previous_time = current_time
+
+            annotated_frame = draw_overlay(frame, display_label, display_confidence, fps)
+            cv2.imshow("Garbage Classifier", annotated_frame)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        capture.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
