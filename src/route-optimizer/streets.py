@@ -1,16 +1,15 @@
 from __future__ import annotations
 from pathlib import Path
 
-import argparse
+import csv
 
 import numpy as np
 import osmnx as ox
-import json
 
 
 DEFAULT_PLACE = "Chisinau, Moldova"
 DEFAULT_DISTANCE_METERS = 1000
-DEFAULT_OUTPUT = "generated/street_lines.json"
+DEFAULT_OUTPUT = "generated/street_lines.csv"
 DEFAULT_GRID_SIZE = 100
 
 
@@ -57,3 +56,38 @@ def fetch_street_lines(place: str, distance_meters: int) -> list[list[tuple[floa
                     if len(line) >= 2:
                         lines.append(line)
     return lines
+
+
+def save_street_lines_csv(
+    lines: list[list[tuple[float, float]]],
+    output_path: str,
+) -> None:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with output.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["line_id", "point_order", "lat", "lon"])
+
+        for line_id, line in enumerate(lines):
+            for point_order, (lat, lon) in enumerate(line):
+                writer.writerow([line_id, point_order, lat, lon])
+
+
+def main() -> None:
+    place = DEFAULT_PLACE
+    distance_meters = DEFAULT_DISTANCE_METERS
+    output = DEFAULT_OUTPUT
+
+    lines = fetch_street_lines(place, distance_meters)
+
+    if not lines:
+        print("No street lines fetched.")
+        return
+
+    save_street_lines_csv(lines, output)
+    print(f"Saved {len(lines)} street lines to {output}")
+
+
+if __name__ == "__main__":
+    main()
