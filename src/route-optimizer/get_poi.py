@@ -13,14 +13,13 @@ import argparse
 from pathlib import Path
 from typing import Iterable
 
-import folium
 import matplotlib.pyplot as plt
 import numpy as np
 import osmnx as ox
 import pandas as pd
 import requests
 
-from visualization import create_poi_map, TYPE_COLORS
+from typing import Tuple
 
 
 DEFAULT_TAGS = {
@@ -56,12 +55,11 @@ TYPE_COLORS = {
 }
 
 __all__ = [
-    "fetch_pois",
-    "clean_pois",
-    "build_grid",
-    "build_leaflet_map",
-    "save_grid_overlay",
-    "add_poi_markers",
+	"fetch_pois",
+	"clean_pois",
+	"build_grid",
+	"save_grid_overlay",
+	"add_poi_markers",
 ]
 
 
@@ -124,7 +122,7 @@ def build_grid(pois, grid_size: int = 50, weights: dict[str, float] | None = Non
 	return grid, (minx, miny, maxx, maxy)
 
 
-def save_grid_overlay(grid, output_path: str = "poi_overlay.png"):
+def save_grid_overlay(grid, output_path: str = "poi_overlay.png") -> str:
 	output_path = str(output_path)
 	Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 	flipped = np.flipud(grid)
@@ -137,6 +135,8 @@ def poi_color(poi_type: str) -> str:
 
 
 def add_poi_markers(map_view, pois):
+	# kept for compatibility with visualization code; minimal wrapper that
+	# expects a folium.Map and a cleaned pois GeoDataFrame
 	marker_layer = folium.FeatureGroup(name="POIs", show=True)
 	for _, row in pois.iterrows():
 		folium.CircleMarker(
@@ -159,9 +159,9 @@ def main():
 	parser.add_argument("--grid-size", type=int, default=100)
 	parser.add_argument("--distance-meters", type=int, default=1000)
 	parser.add_argument("--requests-timeout", type=int, default=60)
-	parser.add_argument("--overlay-opacity", type=float, default=0.45)
-	parser.add_argument("--map-output", default="generated/poi_map.html")
 	parser.add_argument("--overlay-output", default="generated/poi_overlay.png")
+	parser.add_argument("--grid-output", default="generated/poi_grid.npy")
+	parser.add_argument("--pois-output", default="generated/pois.csv")
 	args = parser.parse_args()
 
 	ox.settings.requests_timeout = args.requests_timeout
@@ -179,17 +179,11 @@ def main():
 	print(f"Filtered POIs: {len(pois)}")
 
 	grid, bounds = build_grid(pois, grid_size=args.grid_size)
-	map_output_path, overlay_output_path = create_poi_map(
-		grid,
-		bounds,
-		pois,
-		args.place,
-		overlay_opacity=args.overlay_opacity,
-		map_output_path=args.map_output,
-		overlay_output_path=args.overlay_output,
-	)
-	print(f"Saved Leaflet map to {map_output_path}")
-	print(f"Saved POI overlay to {overlay_output_path}")
+	overlay_path = save_grid_overlay(grid, args.overlay_output)
+	Path(args.grid_output).parent.mkdir(parents=True, exist_ok=True)
+	np.save(args.grid_output, grid)
+	pois.to_csv(args.pois_output, index=False)
+	print(f"Saved grid to {args.grid_output}, overlay to {overlay_path}, pois to {args.pois_output}")
 
 
 if __name__ == "__main__":

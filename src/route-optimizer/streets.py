@@ -3,12 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import folium
 import numpy as np
 import osmnx as ox
+import json
 
 from get_poi import DEFAULT_WEIGHTS, clean_pois, fetch_pois
-from visualization import add_poi_markers, save_grid_overlay
 
 
 DEFAULT_PLACE = "Chisinau, Moldova"
@@ -85,39 +84,7 @@ def fetch_street_lines(place: str, distance_meters: int):
     return lines
 
 
-def create_combined_map(pois, grid, bounds, street_lines, output_path: str) -> str:
-    minx, miny, maxx, maxy = bounds
-    center_lat = (miny + maxy) / 2
-    center_lon = (minx + maxx) / 2
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=14, tiles="CartoDB positron")
-
-    overlay_output_path = str(Path(output_path).with_name(Path(output_path).stem + "_overlay.png"))
-    save_grid_overlay(grid, overlay_output_path)
-
-    folium.raster_layers.ImageOverlay(
-        name="POI grid",
-        image=str(Path(overlay_output_path).resolve()),
-        bounds=[[miny, minx], [maxy, maxx]],
-        opacity=0.45,
-        interactive=False,
-        cross_origin=False,
-        zindex=1,
-    ).add_to(m)
-
-    streets_group = folium.FeatureGroup(name="Streets", show=True)
-    for seg in street_lines:
-        folium.PolyLine(seg, color="#222222", weight=2, opacity=0.85).add_to(streets_group)
-    streets_group.add_to(m)
-
-    add_poi_markers(m, pois)
-    folium.LayerControl(collapsed=False).add_to(m)
-    m.fit_bounds([[miny, minx], [maxy, maxx]])
-
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    m.save(output_path)
-    print(f"Saved combined POI + streets map to {output_path}")
-    return output_path
 
 
 def main():
@@ -126,7 +93,8 @@ def main():
     parser.add_argument("--place", dest="place_opt", default=None)
     parser.add_argument("--grid-size", type=int, default=DEFAULT_GRID_SIZE)
     parser.add_argument("--distance-meters", type=int, default=DEFAULT_DISTANCE_METERS)
-    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
+    parser.add_argument("--grid-output", type=str, default="generated/poi_grid.npy")
+    parser.add_argument("--streets-output", type=str, default="generated/street_lines.json")
     args = parser.parse_args()
     place = args.place_opt or args.place or DEFAULT_PLACE
 
@@ -139,8 +107,14 @@ def main():
     street_lines = fetch_street_lines(place, args.distance_meters)
     if not street_lines:
         print("No street lines found via OSM")
-
-    create_combined_map(pois, grid, bounds, street_lines, args.output)
+    Path(args.grid_output).parent.mkdir(parents=True, exist_ok=True)
+    np.save(args.grid_output, grid)
+    # save street lines as a nested list of [lat, lon] pairs
+    Path(args.streets_output).parent.mkdir(parents=True, exist_ok=True)
+    serial = [[[float(lat), float(lon)] for (lat, lon) in seg] for seg in street_lines]
+    with open(args.streets_output, "w", encoding="utf-8") as fh:
+        json.dump({"bounds": bounds, "street_lines": serial}, fh)
+    print(f"Saved grid to {args.grid_output} and street lines to {args.streets_output}")
 
 
 if __name__ == "__main__":
