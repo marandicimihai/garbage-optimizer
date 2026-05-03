@@ -100,7 +100,7 @@ def main() -> None:
     model = load_model(model_path, device, DEFAULT_CLASS_NAMES)
     transform = make_transform(224)
 
-    camera_idx = 1
+    camera_idx = 0
     print(f"Using camera {camera_idx}")
 
     capture = cv2.VideoCapture(camera_idx)
