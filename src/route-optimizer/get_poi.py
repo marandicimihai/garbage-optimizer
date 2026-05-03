@@ -9,11 +9,11 @@ grid as a semi-transparent overlay plus POI markers.
 Keep usage minimal: import the functions you need (e.g. `build_grid`).
 """
 
-import argparse
 from pathlib import Path
 from typing import Iterable
 
 import matplotlib.pyplot as plt
+import folium
 import numpy as np
 import osmnx as ox
 import pandas as pd
@@ -154,36 +154,35 @@ def add_poi_markers(map_view, pois):
 
 
 def main():
-	parser = argparse.ArgumentParser(description="Build a POI density grid from OpenStreetMap data.")
-	parser.add_argument("place", nargs="?", default="Chisinau, Moldova")
-	parser.add_argument("--grid-size", type=int, default=100)
-	parser.add_argument("--distance-meters", type=int, default=1000)
-	parser.add_argument("--requests-timeout", type=int, default=60)
-	parser.add_argument("--overlay-output", default="generated/poi_overlay.png")
-	parser.add_argument("--grid-output", default="generated/poi_grid.npy")
-	parser.add_argument("--pois-output", default="generated/pois.csv")
-	args = parser.parse_args()
+	# No-CLI mode: use defaults
+	place = "Chisinau, Moldova"
+	grid_size = 100
+	distance_meters = 1000
+	requests_timeout = 60
+	overlay_output = "generated/poi_overlay.png"
+	grid_output = "generated/poi_grid.npy"
+	pois_output = "generated/pois.csv"
 
-	ox.settings.requests_timeout = args.requests_timeout
+	ox.settings.requests_timeout = requests_timeout
 
-	print(f"Fetching POIs for {args.place} with timeout {args.requests_timeout}s...")
+	print(f"Fetching POIs for {place} with timeout {requests_timeout}s...")
 	try:
-		raw = fetch_pois(args.place, distance_meters=args.distance_meters)
+		raw = fetch_pois(place, distance_meters=distance_meters)
 	except requests.RequestException as exc:
 		raise SystemExit(
 			"Failed to fetch POIs from OpenStreetMap. "
-			"Try again later, increase --requests-timeout, or reduce --distance-meters."
+			"Try again later, increase requests_timeout, or reduce distance_meters."
 		) from exc
 
 	pois = clean_pois(raw)
 	print(f"Filtered POIs: {len(pois)}")
 
-	grid, bounds = build_grid(pois, grid_size=args.grid_size)
-	overlay_path = save_grid_overlay(grid, args.overlay_output)
-	Path(args.grid_output).parent.mkdir(parents=True, exist_ok=True)
-	np.save(args.grid_output, grid)
-	pois.to_csv(args.pois_output, index=False)
-	print(f"Saved grid to {args.grid_output}, overlay to {overlay_path}, pois to {args.pois_output}")
+	grid, bounds = build_grid(pois, grid_size=grid_size)
+	overlay_path = save_grid_overlay(grid, overlay_output)
+	Path(grid_output).parent.mkdir(parents=True, exist_ok=True)
+	np.save(grid_output, grid)
+	pois.to_csv(pois_output, index=False)
+	print(f"Saved grid to {grid_output}, overlay to {overlay_path}, pois to {pois_output}")
 
 
 if __name__ == "__main__":

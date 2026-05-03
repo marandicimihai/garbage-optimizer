@@ -57,17 +57,15 @@ def build_combined_map(place: str, distance_meters: int, grid_size: int, bin_spa
 
     bin_group = folium.FeatureGroup(name="Bins", show=True)
     for b in bins:
-        x1 = minx + b.x * cell_width
-        y1 = miny + b.y * cell_height
-        x2 = x1 + cell_width
-        y2 = y1 + cell_height
-        folium.Rectangle(
-            bounds=[[y1, x1], [y2, x2]],
-            color="#90EE90",
+        # bins are points on streets (lat, lon)
+        folium.CircleMarker(
+            location=[b.lat, b.lon],
+            radius=5,
+            color="#2ca02c",
             fill=True,
-            fillColor="#90EE90",
-            fillOpacity=0.7,
-            weight=2,
+            fillColor="#2ca02c",
+            fillOpacity=0.9,
+            weight=1,
             popup=f"Bin {b.bin_id}<br>Load: {b.get_load_ratio():.1%}<br>{b.current_load:.1f}/{b.capacity:.1f}kg",
         ).add_to(bin_group)
     bin_group.add_to(m)
@@ -82,15 +80,14 @@ def build_combined_map(place: str, distance_meters: int, grid_size: int, bin_spa
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run POI, streets and place-bins, then generate a unified HTML map")
-    parser.add_argument("place", nargs="?", default="Chisinau, Moldova")
-    parser.add_argument("--distance-meters", type=int, default=1000)
-    parser.add_argument("--grid-size", type=int, default=100)
-    parser.add_argument("--bin-spacing-meters", type=float, default=40.0)
-    parser.add_argument("--output", type=str, default="generated/combined_map.html")
-    args = parser.parse_args()
+    # No-CLI defaults
+    place = "Chisinau, Moldova"
+    distance_meters = 1000
+    grid_size = 100
+    bin_spacing_meters = 70.0
+    output = "generated/combined_map.html"
 
-    build_combined_map(args.place, args.distance_meters, args.grid_size, args.bin_spacing_meters, args.output)
+    build_combined_map(place, distance_meters, grid_size, bin_spacing_meters, output)
 
 
 if __name__ == "__main__":
