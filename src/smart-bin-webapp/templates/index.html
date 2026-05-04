@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Bin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      gap: 28px;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      color: #58a6ff;
+    }
+
+    /* ── webcam card ── */
+    .cam-card {
+      position: relative;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 2px solid #21262d;
+      box-shadow: 0 8px 32px rgba(0,0,0,.5);
+      width: min(640px, 100%);
+    }
+
+    #webcam {
+      width: 100%;
+      display: block;
+    }
+
+    /* flash overlay on classify */
+    .flash {
+      position: absolute;
+      inset: 0;
+      background: white;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .08s ease;
+    }
+    .flash.active { opacity: .35; }
+
+    /* ── result panel ── */
+    #result-panel {
+      width: min(640px, 100%);
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 16px;
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    #label-box {
+      font-size: 2rem;
+      font-weight: 800;
+      text-transform: capitalize;
+      letter-spacing: .02em;
+      color: #58a6ff;
+      min-height: 2.5rem;
+    }
+
+    #confidence-box {
+      font-size: 1rem;
+      color: #8b949e;
+    }
+
+    #bin-box {
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: #21262d;
+      color: #58a6ff;
+      min-width: 120px;
+      text-align: center;
+    }
+
+    /* ── progress bar ── */
+    .bar-track {
+      height: 6px;
+      background: #21262d;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #388bfd, #58a6ff);
+      border-radius: 99px;
+      transition: width .25s ease;
+    }
+
+    /* ── buttons ── */
+    .btn-row {
+      display: flex;
+      gap: 14px;
+    }
+
+    button {
+      flex: 1;
+      padding: 14px 0;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: .04em;
+      transition: opacity .15s, transform .1s;
+    }
+    button:disabled { opacity: .35; cursor: not-allowed; transform: none !important; }
+    button:not(:disabled):hover { transform: translateY(-1px); }
+
+    #btn-classify {
+      background: #238636;
+      color: #fff;
+    }
+    #btn-send {
+      background: #1f6feb;
+      color: #fff;
+    }
+
+    /* ── status message ── */
+    #status {
+      font-size: .9rem;
+      color: #8b949e;
+      min-height: 1.3em;
+      text-align: center;
+    }
+
+    /* ── countdown ring ── */
+    .countdown-wrap {
+      display: none;
+      justify-content: center;
+    }
+    .countdown-wrap.visible { display: flex; }
+
+    .ring {
+      position: relative;
+      width: 60px;
+      height: 60px;
+    }
+    .ring svg { transform: rotate(-90deg); }
+    .ring circle.track {
+      fill: none;
+      stroke: #21262d;
+      stroke-width: 5;
+    }
+    .ring circle.progress {
+      fill: none;
+      stroke: #58a6ff;
+      stroke-width: 5;
+      stroke-dasharray: 163;
+      stroke-dashoffset: 163;
+      transition: stroke-dashoffset .9s linear;
+    }
+    .ring .num {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #58a6ff;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>♻ Smart Bin Controller</h1>
+
+  <div class="cam-card">
+    <img id="webcam" src="/video_feed" alt="Live feed" />
+    <div class="flash" id="flash"></div>
+  </div>
+
+  <div id="result-panel">
+
+    <div class="result-row">
+      <div id="label-box">—</div>
+      <div id="bin-box">—</div>
+    </div>
+
+    <div>
+      <div id="confidence-box">Confidence: —</div>
+      <div class="bar-track" style="margin-top:8px">
+        <div class="bar-fill" id="conf-bar"></div>
+      </div>
+    </div>
+
+    <div class="countdown-wrap" id="countdown-wrap">
+      <div class="ring">
+        <svg viewBox="0 0 56 56" width="60" height="60">
+          <circle class="track" cx="28" cy="28" r="26"/>
+          <circle class="progress" cx="28" cy="28" r="26" id="ring-prog"/>
+        </svg>
+        <div class="num" id="ring-num">7</div>
+      </div>
+    </div>
+
+    <div id="status">Point an object at the camera and press Classify.</div>
+
+    <div class="btn-row">
+      <button id="btn-classify">Classify</button>
+      <button id="btn-send" disabled>Send to Bin</button>
+    </div>
+
+  </div>
+
+  <script>
+    const BIN_LABELS = {
+      0:   "General waste",
+      144: "Plastic",
+      288: "Metal",
+      432: "Paper",
+      576: "Glass",
+    };
+
+    const flashEl    = document.getElementById("flash");
+    const labelEl    = document.getElementById("label-box");
+    const binEl      = document.getElementById("bin-box");
+    const confEl     = document.getElementById("confidence-box");
+    const confBar    = document.getElementById("conf-bar");
+    const statusEl   = document.getElementById("status");
+    const btnClassify = document.getElementById("btn-classify");
+    const btnSend     = document.getElementById("btn-send");
+    const countdownWrap = document.getElementById("countdown-wrap");
+    const ringProg   = document.getElementById("ring-prog");
+    const ringNum    = document.getElementById("ring-num");
+
+    let currentAngle = null;
+    const CIRCUMFERENCE = 163;  // 2π × 26
+
+    // ── flash helper ──────────────────────────────────────────────────────────
+    function doFlash() {
+      flashEl.classList.add("active");
+      setTimeout(() => flashEl.classList.remove("active"), 120);
+    }
+
+    // ── countdown helper ─────────────────────────────────────────────────────
+    function startCountdown(seconds) {
+      countdownWrap.classList.add("visible");
+      ringProg.style.strokeDashoffset = 0;
+      ringNum.textContent = seconds;
+      let remaining = seconds;
+      const interval = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearInterval(interval);
+          countdownWrap.classList.remove("visible");
+          ringProg.style.strokeDashoffset = CIRCUMFERENCE;
+          return;
+        }
+        ringNum.textContent = remaining;
+        const offset = CIRCUMFERENCE * (1 - remaining / seconds);
+        ringProg.style.strokeDashoffset = offset;
+      }, 1000);
+    }
+
+    // ── classify ─────────────────────────────────────────────────────────────
+    btnClassify.addEventListener("click", async () => {
+      doFlash();
+      btnClassify.disabled = true;
+      btnSend.disabled = true;
+      statusEl.textContent = "Classifying…";
+
+      try {
+        const res = await fetch("/classify", { method: "POST" });
+        if (!res.ok) throw new Error("Server error");
+        const data = await res.json();
+
+        labelEl.textContent   = data.label;
+        confEl.textContent    = `Confidence: ${data.confidence}%`;
+        confBar.style.width   = `${data.confidence}%`;
+        currentAngle          = data.angle;
+        binEl.textContent     = BIN_LABELS[data.angle] ?? `Angle ${data.angle}°`;
+
+        statusEl.textContent  = "Ready. Press Send to Bin.";
+        btnSend.disabled      = false;
+      } catch (e) {
+        statusEl.textContent = "Classification failed. Try again.";
+        console.error(e);
+      } finally {
+        btnClassify.disabled = false;
+      }
+    });
+
+    // ── send to bin ───────────────────────────────────────────────────────────
+    btnSend.addEventListener("click", async () => {
+      if (currentAngle === null) return;
+      btnClassify.disabled = true;
+      btnSend.disabled = true;
+      statusEl.textContent = `Moving bin to position… (${BIN_LABELS[currentAngle]})`;
+
+      // Start 7 s visual countdown immediately
+      startCountdown(7);
+
+      try {
+        const res = await fetch("/send_to_bin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ angle: currentAngle }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Bin error");
+        }
+        statusEl.textContent = "Done! Bin returned to home. You can scan the next object.";
+      } catch (e) {
+        statusEl.textContent = `Error: ${e.message}`;
+        console.error(e);
+      } finally {
+        // Reset UI for next object
+        labelEl.textContent  = "—";
+        binEl.textContent    = "—";
+        confEl.textContent   = "Confidence: —";
+        confBar.style.width  = "0%";
+        currentAngle         = null;
+        btnClassify.disabled = false;
+        btnSend.disabled     = true;
+      }
+    });
+  </script>
+</body>
+</html>
