@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -91,6 +92,61 @@ def read_waste_events(path: Path) -> list[dict[str, object]]:
             )
     return events
 
+def read_truck_routes(path: Path) -> list[dict[str, object]]:
+    routes_by_date: dict[str, dict[str, object]] = {}
+    csv.field_size_limit(sys.maxsize)
+    with path.open("r", encoding="utf-8", newline="") as file_handle:
+        reader = csv.DictReader(file_handle)
+        for row in reader:
+            try:
+                date = str(row["date"])
+                stop_order = int(row["stop_order"])
+                bin_id = int(row["binId"])
+                lat = float(row["lat"])
+                lon = float(row["lon"])
+                depot_lat = float(row["depot_lat"])
+                depot_lon = float(row["depot_lon"])
+                collected_kg = float(row["collected_kg"])
+                day_collection_kg = float(row["day_collection_kg"])
+                day_distance_m = float(row["day_distance_m"])
+                day_co2_kg = float(row["day_co2_kg"])
+                route_path = json.loads(str(row.get("route_path", "[]")))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+
+            route = routes_by_date.setdefault(
+                date,
+                {
+                    "date": date,
+                    "depot": [round(depot_lat, 6), round(depot_lon, 6)],
+                    "stops": [],
+                    "collected_kg": round(day_collection_kg, 3),
+                    "distance_m": round(day_distance_m, 3),
+                    "co2_kg": round(day_co2_kg, 3),
+                    "route_path": route_path,
+                },
+            )
+            route["stops"].append((stop_order, bin_id, round(lat, 6), round(lon, 6), round(collected_kg, 3)))
+            if not route.get("route_path") and route_path:
+                route["route_path"] = route_path
+
+    routes: list[dict[str, object]] = []
+    for date in sorted(routes_by_date):
+        route = routes_by_date[date]
+        ordered_stops = sorted(route["stops"], key=lambda item: item[0])
+        coords = route.get("route_path") or [route["depot"]]
+        routes.append(
+            {
+                "date": date,
+                "coords": coords,
+                "stops": len(ordered_stops),
+                "collected_kg": route["collected_kg"],
+                "distance_m": route["distance_m"],
+                "co2_kg": route["co2_kg"],
+            }
+        )
+    return routes
+
 
 def compute_center(
     pois: list[dict[str, object]],
@@ -139,34 +195,26 @@ def compute_bin_load_series(
         daily_loads.setdefault(bin_id, [0.0] * len(day_labels))[index] += weight
         daily_totals[index] += weight
 
-    cumulative_totals: list[float] = []
-    running_total = 0.0
-    for daily_total in daily_totals:
-        running_total += daily_total
-        cumulative_totals.append(round(running_total, 3))
-
     series: list[dict[str, object]] = []
     for bin_item in bins:
-        bin_id = int(bin_item["binId"])
-        cumulative = 0.0
-        values: list[float] = []
-        for day_load in daily_loads.get(bin_id, [0.0] * len(day_labels)):
-            cumulative += day_load
-            values.append(round(cumulative, 3))
-        peak = round(max(values) if values else 0.0, 3)
-        series.append(
-            {
-                "binId": bin_id,
-                "lat": float(bin_item["lat"]),
-                "lon": float(bin_item["lon"]),
-                "values": values,
-                "peak": peak,
-                "total": round(values[-1] if values else 0.0, 3),
-            }
-        )
+      bin_id = int(bin_item["binId"])
+      values: list[float] = []
+      for day_load in daily_loads.get(bin_id, [0.0] * len(day_labels)):
+        values.append(round(day_load, 3))
+      peak = round(max(values) if values else 0.0, 3)
+      series.append(
+        {
+          "binId": bin_id,
+          "lat": float(bin_item["lat"]),
+          "lon": float(bin_item["lon"]),
+          "values": values,
+          "peak": peak,
+          "total": round(sum(values), 3),
+        }
+      )
 
     series.sort(key=lambda item: (-float(item["peak"]), int(item["binId"])))
-    return day_labels, cumulative_totals, series
+    return day_labels, [round(total, 3) for total in daily_totals], series
 
 
 def build_html(
@@ -176,6 +224,7 @@ def build_html(
     day_labels: list[str],
     day_totals: list[float],
     load_series: list[dict[str, object]],
+    truck_routes: list[dict[str, object]],
     center_lat: float,
     center_lon: float,
 ) -> str:
@@ -185,6 +234,7 @@ def build_html(
     day_labels_json = json.dumps(day_labels, ensure_ascii=True)
     day_totals_json = json.dumps(day_totals, ensure_ascii=True)
     load_series_json = json.dumps(load_series, ensure_ascii=True)
+    truck_routes_json = json.dumps(truck_routes, ensure_ascii=True)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -301,6 +351,22 @@ def build_html(
 
     .day-control input[type="range"] {{
       width: min(280px, 46vw);
+    }}
+
+    .play-route {{
+      border: 1px solid #cad3e0;
+      border-radius: 999px;
+      background: #0f172a;
+      color: #fff;
+      cursor: pointer;
+      padding: 9px 14px;
+      font: inherit;
+      box-shadow: 0 6px 14px #0000000f;
+    }}
+
+    .play-route:disabled {{
+      opacity: 0.6;
+      cursor: wait;
     }}
 
     .day-label {{
@@ -493,7 +559,7 @@ def build_html(
 <body>
   <header class="top">
     <div class="brand">
-      <h1 class="title">Street Lines + POIs + Bins</h1>
+    <h1 class="title">Street Sweep + POIs + Bins</h1>
       <div class="counts" id="counts"></div>
     </div>
     <div class="controls">
@@ -506,6 +572,7 @@ def build_html(
         <input id="day-slider" type="range" min="0" max="6" step="1" value="0" />
         <span class="day-label" id="day-label"></span>
       </div>
+      <button id="play-route" class="play-route" type="button">Play route</button>
     </div>
   </header>
 
@@ -523,12 +590,12 @@ def build_html(
     <div class="view" id="load-view">
       <div class="load-panel">
         <div class="load-summary">
-          <div class="summary-card"><span class="label">Selected day</span><strong id="summary-day">-</strong></div>
-          <div class="summary-card"><span class="label">Total trash</span><strong id="summary-total">0.00 kg</strong></div>
-          <div class="summary-card"><span class="label">Peak bin load</span><strong id="summary-peak">0.00 kg</strong></div>
-          <div class="summary-card"><span class="label">Most loaded bin</span><strong id="summary-bin">#-</strong></div>
+            <div class="summary-card"><span class="label">Selected day</span><strong id="summary-day">-</strong></div>
+            <div class="summary-card"><span class="label">Collected</span><strong id="summary-total">0.00 kg</strong></div>
+            <div class="summary-card"><span class="label">Distance</span><strong id="summary-distance">0.00 km</strong></div>
+            <div class="summary-card"><span class="label">CO2 estimate</span><strong id="summary-co2">0.00 kg</strong></div>
         </div>
-        <div class="view-caption">Each cell shows the cumulative waste held in a bin on that day. Colors move from green to red as the bin fills.</div>
+          <div class="view-caption">Each cell shows the waste collected from a bin on that day. The truck sweeps every bin daily and empties it.</div>
         <div class="table-wrap">
           <table aria-label="Bin load by day">
             <thead>
@@ -549,6 +616,7 @@ def build_html(
     const dayLabels = {day_labels_json};
     const dayTotals = {day_totals_json};
     const loadSeries = {load_series_json};
+    const truckRoutes = {truck_routes_json};
 
     const center = [{center_lat}, {center_lon}];
     const map = L.map("map", {{ zoomControl: true }}).setView(center, 14);
@@ -620,6 +688,147 @@ def build_html(
       binMarkers.set(b.binId, marker);
     }});
 
+    const routeLayer = L.layerGroup().addTo(map);
+    const routeTrailLayer = L.layerGroup().addTo(map);
+    const truckLayer = L.layerGroup().addTo(map);
+    const routeLookup = new Map(truckRoutes.map(route => [route.date, route]));
+    const truckIcon = L.divIcon({{
+      className: "truck-icon",
+      html: '<div style="width:16px;height:16px;border-radius:999px;background:#f97316;border:2px solid #fff;box-shadow:0 0 0 2px rgba(15,23,42,0.55);"></div>',
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+    }});
+
+    let routeAnimationFrame = null;
+    let routeAnimationStart = 0;
+    let truckMarker = null;
+
+    function routePoints(route) {{
+      return route && Array.isArray(route.coords) ? route.coords.filter(point => Array.isArray(point) && point.length >= 2) : [];
+    }}
+
+    function routeSegments(points) {{
+      const segments = [];
+      let total = 0;
+      for (let index = 0; index < points.length - 1; index += 1) {{
+        const start = points[index];
+        const end = points[index + 1];
+        const length = map.distance(start, end);
+        if (length > 0) {{
+          total += length;
+          segments.push({{ start, end, length, endDistance: total }});
+        }}
+      }}
+      return {{ segments, total }};
+    }}
+
+    function pointAtDistance(points, distanceMeters) {{
+      const {{ segments, total }} = routeSegments(points);
+      if (!segments.length) {{
+        return null;
+      }}
+
+      const target = Math.min(Math.max(distanceMeters, 0), total);
+      for (const segment of segments) {{
+        const startDistance = segment.endDistance - segment.length;
+        if (target <= segment.endDistance) {{
+          const ratio = segment.length === 0 ? 1 : (target - startDistance) / segment.length;
+          return [
+            segment.start[0] + (segment.end[0] - segment.start[0]) * ratio,
+            segment.start[1] + (segment.end[1] - segment.start[1]) * ratio,
+          ];
+        }}
+      }}
+
+      return points[points.length - 1];
+    }}
+
+    function cancelRouteAnimation() {{
+      if (routeAnimationFrame !== null) {{
+        cancelAnimationFrame(routeAnimationFrame);
+        routeAnimationFrame = null;
+      }}
+      playRouteButton.disabled = false;
+    }}
+
+    function renderRouteTrail(points, progressMeters) {{
+      routeTrailLayer.clearLayers();
+      const {{ segments }} = routeSegments(points);
+      if (!segments.length) {{
+        return;
+      }}
+
+      const trail = [points[0]];
+      let consumed = 0;
+      for (const segment of segments) {{
+        if (consumed + segment.length < progressMeters) {{
+          trail.push(segment.end);
+          consumed += segment.length;
+          continue;
+        }}
+
+        const ratio = segment.length === 0 ? 1 : Math.max(0, Math.min(1, (progressMeters - consumed) / segment.length));
+        trail.push([
+          segment.start[0] + (segment.end[0] - segment.start[0]) * ratio,
+          segment.start[1] + (segment.end[1] - segment.start[1]) * ratio,
+        ]);
+        break;
+      }}
+
+      if (trail.length >= 2) {{
+        L.polyline(trail, {{ color: "#f97316", weight: 4.5, opacity: 0.95 }}).addTo(routeTrailLayer);
+      }}
+    }}
+
+    function animateRoute(route) {{
+      cancelRouteAnimation();
+      truckLayer.clearLayers();
+
+      const points = routePoints(route);
+      if (points.length < 2) {{
+        return;
+      }}
+
+      const {{ total }} = routeSegments(points);
+      if (total <= 0) {{
+        return;
+      }}
+
+      playRouteButton.disabled = true;
+      routeAnimationStart = 0;
+      const durationMs = Math.max(4200, Math.min(12000, total / 2.6));
+
+      const tick = timestamp => {{
+        if (routeAnimationStart === 0) {{
+          routeAnimationStart = timestamp;
+        }}
+
+        const elapsed = timestamp - routeAnimationStart;
+        const progress = Math.min(1, elapsed / durationMs);
+        const distanceMeters = total * progress;
+        const currentPoint = pointAtDistance(points, distanceMeters);
+
+        renderRouteTrail(points, distanceMeters);
+
+        if (currentPoint) {{
+          if (!truckMarker) {{
+            truckMarker = L.marker(currentPoint, {{ icon: truckIcon }}).addTo(truckLayer);
+          }} else {{
+            truckMarker.setLatLng(currentPoint);
+          }}
+        }}
+
+        if (progress < 1) {{
+          routeAnimationFrame = requestAnimationFrame(tick);
+        }} else {{
+          routeAnimationFrame = null;
+          playRouteButton.disabled = false;
+        }}
+      }};
+
+      routeAnimationFrame = requestAnimationFrame(tick);
+    }}
+
     const countsEl = document.getElementById("counts");
     countsEl.innerHTML = `
       <span><strong>Streets:</strong> ${{streets.length}}</span>
@@ -635,11 +844,12 @@ def build_html(
     const loadView = document.getElementById("load-view");
     const daySlider = document.getElementById("day-slider");
     const dayLabelEl = document.getElementById("day-label");
+    const playRouteButton = document.getElementById("play-route");
     const mapSummary = document.getElementById("map-summary");
     const summaryDay = document.getElementById("summary-day");
     const summaryTotal = document.getElementById("summary-total");
-    const summaryPeak = document.getElementById("summary-peak");
-    const summaryBin = document.getElementById("summary-bin");
+    const summaryDistance = document.getElementById("summary-distance");
+    const summaryCo2 = document.getElementById("summary-co2");
     const loadHeadRow = document.getElementById("load-head-row");
     const loadBody = document.getElementById("load-body");
 
@@ -687,13 +897,11 @@ def build_html(
 
     function updateMapColors(dayIndex) {{
       let selectedDayPeak = 0;
-      let busiestBin = null;
 
       loadSeries.forEach(series => {{
         const value = series.values[dayIndex] || 0;
         if (value > selectedDayPeak) {{
           selectedDayPeak = value;
-          busiestBin = series.binId;
         }}
 
         const marker = binMarkers.get(series.binId);
@@ -712,11 +920,29 @@ def build_html(
       }});
 
       const totalLoad = dayTotals[dayIndex] || 0;
-      mapSummary.textContent = `${{dayLabel(dayIndex)}} | total waste stored: ${{formatWeight(totalLoad)}}`;
+      const route = routeLookup.get(dayLabels[dayIndex] || "");
+      routeLayer.clearLayers();
+      if (route && route.coords && route.coords.length >= 2) {{
+        L.polyline(route.coords, {{ color: "#0f172a", weight: 3.5, opacity: 0.9, dashArray: "6 6" }}).addTo(routeLayer);
+      }}
+
+      if (route) {{
+        animateRoute(route);
+      }} else {{
+        cancelRouteAnimation();
+        routeTrailLayer.clearLayers();
+        truckLayer.clearLayers();
+        truckMarker = null;
+      }}
+
+      const distanceKm = route ? route.distance_m / 1000.0 : 0;
+      const co2Kg = route ? route.co2_kg : 0;
+
+      mapSummary.textContent = `${{dayLabel(dayIndex)}} | collected: ${{formatWeight(totalLoad)}} | distance: ${{distanceKm.toFixed(2)}} km | CO2: ${{co2Kg.toFixed(2)}} kg`;
       summaryDay.textContent = dayLabel(dayIndex);
       summaryTotal.textContent = formatWeight(totalLoad);
-      summaryPeak.textContent = formatWeight(selectedDayPeak);
-      summaryBin.textContent = busiestBin === null ? "#-" : `#${{busiestBin}}`;
+      summaryDistance.textContent = `${{distanceKm.toFixed(2)}} km`;
+      summaryCo2.textContent = `${{co2Kg.toFixed(2)}} kg`;
       setActiveDayColumn(dayIndex);
     }}
 
@@ -733,6 +959,12 @@ def build_html(
 
     mapTab.addEventListener("click", () => setMode("map"));
     loadTab.addEventListener("click", () => setMode("load"));
+    playRouteButton.addEventListener("click", () => {{
+      const route = routeLookup.get(dayLabels[viewState.dayIndex] || "");
+      if (route) {{
+        animateRoute(route);
+      }}
+    }});
     daySlider.max = String(Math.max(0, dayLabels.length - 1));
     daySlider.value = "0";
     daySlider.addEventListener("input", event => {{
@@ -749,6 +981,7 @@ def build_html(
     streets.forEach(line => line.forEach(point => allCoords.push(point)));
     pois.forEach(p => allCoords.push([p.lat, p.lon]));
     bins.forEach(b => allCoords.push([b.lat, b.lon]));
+    truckRoutes.forEach(route => route.coords.forEach(point => allCoords.push(point)));
     if (allCoords.length > 1) {{
       map.fitBounds(allCoords, {{ padding: [20, 20] }});
     }}
@@ -773,10 +1006,14 @@ def main() -> None:
             + "\n".join(f"- {path}" for path in missing)
         )
 
-    pois = read_pois(pois_csv)
     bins = read_bins(bins_csv)
     street_lines = read_street_lines(streets_csv)
     waste_events = read_waste_events(waste_events_csv)
+    truck_routes_csv = gen_dir / "truck_routes.csv"
+    if not truck_routes_csv.exists():
+        raise SystemExit(f"Missing required CSV files. Run the generators first:\n- {truck_routes_csv}")
+    pois = read_pois(pois_csv)
+    truck_routes = read_truck_routes(truck_routes_csv)
     day_labels, day_totals, load_series = compute_bin_load_series(waste_events, bins)
     center_lat, center_lon = compute_center(pois, bins, street_lines)
 
@@ -787,13 +1024,14 @@ def main() -> None:
         day_labels,
         day_totals,
         load_series,
+        truck_routes,
         center_lat,
         center_lon,
     )
     output_html.write_text(html, encoding="utf-8")
 
     print(f"HTML visualization written to: {output_html}")
-    print(f"Loaded {len(pois)} POIs, {len(bins)} bins, {len(street_lines)} street lines, and {len(waste_events)} waste events")
+    print(f"Loaded {len(pois)} POIs, {len(bins)} bins, {len(street_lines)} street lines, {len(waste_events)} waste events, and {len(truck_routes)} truck routes")
 
 
 if __name__ == "__main__":
