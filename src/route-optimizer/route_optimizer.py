@@ -285,7 +285,7 @@ def compute_day_stats(
 
     def to_coords(route_bins: list[Bin]) -> list[list[float]]:
         coords = [[depot[0], depot[1]]]
-        coords.extend([b.lat, b.lon] for b in route_bins)
+        coords.extend([[b.lat, b.lon] for b in route_bins])
         coords.append([depot[0], depot[1]])
         return coords
 
