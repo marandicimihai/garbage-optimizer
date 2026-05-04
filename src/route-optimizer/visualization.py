@@ -4,6 +4,7 @@ import csv
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 def project_root() -> Path:
@@ -92,6 +93,16 @@ def read_waste_events(path: Path) -> list[dict[str, object]]:
     return events
 
 
+def read_routes_data(path: Path) -> list[dict[str, Any]]:
+    """Load routes.json produced by route_optimizer.py.  Returns [] if absent."""
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
 def compute_center(
     pois: list[dict[str, object]],
     bins: list[dict[str, float | int]],
@@ -178,6 +189,7 @@ def build_html(
     load_series: list[dict[str, object]],
     center_lat: float,
     center_lon: float,
+    routes_data: list[dict[str, Any]] | None = None,
 ) -> str:
     pois_json = json.dumps(pois, ensure_ascii=True)
     bins_json = json.dumps(bins, ensure_ascii=True)
@@ -185,14 +197,16 @@ def build_html(
     day_labels_json = json.dumps(day_labels, ensure_ascii=True)
     day_totals_json = json.dumps(day_totals, ensure_ascii=True)
     load_series_json = json.dumps(load_series, ensure_ascii=True)
+    routes_json_str = json.dumps(routes_data or [], ensure_ascii=True)
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Route Optimizer Data View</title>
+  <title>Route Optimizer — Bin Data &amp; Route Comparison</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
     :root {{
       --ink: #15202b;
@@ -488,18 +502,163 @@ def build_html(
       .map-wrap {{ margin: 6px; border-radius: 10px; }}
       .legend {{ right: 8px; top: 8px; padding: 8px 10px; }}
     }}
+
+    /* ── route comparison view ── */
+    .route-panel {{
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      height: 100%;
+      min-height: min(78vh, 860px);
+    }}
+
+    .route-summary {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px 14px 0;
+    }}
+
+    @media (max-width: 760px) {{
+      .route-summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    }}
+
+    .route-body {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px 14px 14px;
+      overflow: auto;
+    }}
+
+    @media (max-width: 900px) {{
+      .route-body {{ grid-template-columns: 1fr; }}
+    }}
+
+    .route-map-wrap {{
+      position: relative;
+      border: 1px solid #d4deec;
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 320px;
+      box-shadow: 0 14px 30px #00000014;
+    }}
+
+    #route-map {{
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+    }}
+
+    .chart-card {{
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px;
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 10px 24px #00000010;
+    }}
+
+    .chart-card h3 {{
+      margin: 0;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+
+    .chart-card canvas {{ flex: 1; }}
+
+    .route-legend {{
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      font-size: 0.82rem;
+      padding: 6px 0 0;
+    }}
+
+    .route-legend span {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }}
+
+    .route-legend i {{
+      display: inline-block;
+      width: 28px;
+      height: 4px;
+      border-radius: 2px;
+    }}
+
+    .algo-badge {{
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      background: #0f172a;
+      color: #ffffff;
+      vertical-align: middle;
+    }}
+
+    .savings-badge {{
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      background: #dcfce7;
+      color: #166534;
+    }}
+
+    .route-toggle-group {{
+      display: inline-flex;
+      overflow: hidden;
+      border: 1px solid #cad3e0;
+      border-radius: 999px;
+      background: #fff;
+      box-shadow: 0 4px 10px #0000000d;
+      margin: 0 14px 10px;
+    }}
+
+    .route-toggle-group button {{
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+      padding: 7px 14px;
+      font: inherit;
+      font-size: 0.84rem;
+      transition: background 120ms ease, color 120ms ease;
+    }}
+
+    .route-toggle-group button.active {{
+      background: #0f172a;
+      color: #fff;
+    }}
+
+    .no-routes-msg {{
+      padding: 40px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
   </style>
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <h1 class="title">Street Lines + POIs + Bins</h1>
+      <h1 class="title">Route Optimizer — Bin Data &amp; Route Comparison</h1>
       <div class="counts" id="counts"></div>
     </div>
     <div class="controls">
       <div class="toggle-group" role="tablist" aria-label="View switcher">
         <button id="map-tab" class="active" type="button" role="tab" aria-selected="true">Map view</button>
         <button id="load-tab" type="button" role="tab" aria-selected="false">Load view</button>
+        <button id="route-tab" type="button" role="tab" aria-selected="false">Route comparison</button>
       </div>
       <div class="day-control" aria-label="Day selector">
         <label for="day-slider">Day</label>
@@ -539,6 +698,67 @@ def build_html(
         </div>
       </div>
     </div>
+
+    <!-- ── Route Comparison view ─────────────────────────────────────────── -->
+    <div class="view" id="route-view">
+      <div id="no-routes-msg" class="no-routes-msg" style="display:none">
+        Route data not found. Run <code>route_optimizer.py</code> first, then re-generate the visualisation.
+      </div>
+      <div id="route-content" class="route-panel">
+        <div class="route-summary">
+          <div class="summary-card">
+            <span class="label">Selected day</span>
+            <strong id="route-summary-day">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="label">Distance saved</span>
+            <strong id="route-summary-dist">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="label">Fuel saved</span>
+            <strong id="route-summary-fuel">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="label">Saving</span>
+            <strong id="route-summary-pct">-</strong>
+          </div>
+        </div>
+
+        <div class="route-toggle-group" role="group" aria-label="Route type">
+          <button id="show-both-btn" class="active" type="button">Both routes</button>
+          <button id="show-regular-btn" type="button">Regular only</button>
+          <button id="show-opt-btn" type="button">ML-optimised only</button>
+        </div>
+
+        <div class="route-body">
+          <div class="route-map-wrap">
+            <div id="route-map" aria-label="Route comparison map"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="chart-card">
+              <h3>Distance per day (km)</h3>
+              <canvas id="dist-chart" height="160"></canvas>
+              <div class="route-legend">
+                <span><i style="background:#6b7280"></i>Regular route</span>
+                <span><i style="background:#22c55e"></i>ML-optimised <span class="algo-badge">NN-TSP</span></span>
+              </div>
+            </div>
+            <div class="chart-card">
+              <h3>Fuel per day (litres)</h3>
+              <canvas id="fuel-chart" height="160"></canvas>
+              <div class="route-legend">
+                <span><i style="background:#6b7280"></i>Regular route</span>
+                <span><i style="background:#22c55e"></i>ML-optimised</span>
+              </div>
+            </div>
+            <div class="chart-card">
+              <h3>Distance &amp; fuel savings summary</h3>
+              <div id="savings-table" style="font-size:0.85rem;line-height:1.9;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -549,6 +769,7 @@ def build_html(
     const dayLabels = {day_labels_json};
     const dayTotals = {day_totals_json};
     const loadSeries = {load_series_json};
+    const routesData = {routes_json_str};
 
     const center = [{center_lat}, {center_lon}];
     const map = L.map("map", {{ zoomControl: true }}).setView(center, 14);
@@ -631,8 +852,10 @@ def build_html(
     const viewState = {{ mode: "map", dayIndex: 0 }};
     const mapTab = document.getElementById("map-tab");
     const loadTab = document.getElementById("load-tab");
+    const routeTab = document.getElementById("route-tab");
     const mapView = document.getElementById("map-view");
     const loadView = document.getElementById("load-view");
+    const routeView = document.getElementById("route-view");
     const daySlider = document.getElementById("day-slider");
     const dayLabelEl = document.getElementById("day-label");
     const mapSummary = document.getElementById("map-summary");
@@ -724,15 +947,22 @@ def build_html(
       viewState.mode = mode;
       mapTab.classList.toggle("active", mode === "map");
       loadTab.classList.toggle("active", mode === "load");
+      routeTab.classList.toggle("active", mode === "route");
       mapTab.setAttribute("aria-selected", String(mode === "map"));
       loadTab.setAttribute("aria-selected", String(mode === "load"));
+      routeTab.setAttribute("aria-selected", String(mode === "route"));
       mapView.classList.toggle("active", mode === "map");
       loadView.classList.toggle("active", mode === "load");
-      requestAnimationFrame(() => map.invalidateSize());
+      routeView.classList.toggle("active", mode === "route");
+      requestAnimationFrame(() => {{
+        map.invalidateSize();
+        if (mode === "route" && routeMap) routeMap.invalidateSize();
+      }});
     }}
 
     mapTab.addEventListener("click", () => setMode("map"));
     loadTab.addEventListener("click", () => setMode("load"));
+    routeTab.addEventListener("click", () => setMode("route"));
     daySlider.max = String(Math.max(0, dayLabels.length - 1));
     daySlider.value = "0";
     daySlider.addEventListener("input", event => {{
@@ -752,6 +982,184 @@ def build_html(
     if (allCoords.length > 1) {{
       map.fitBounds(allCoords, {{ padding: [20, 20] }});
     }}
+
+    // ── Route Comparison ──────────────────────────────────────────────────
+    let routeMap = null;
+    let regularPolyline = null;
+    let optimisedPolyline = null;
+    let depotMarker = null;
+    let distChart = null;
+    let fuelChart = null;
+    let routeViewState = {{ dayIndex: 0, show: "both" }};
+
+    function fmtKm(v) {{ return `${{Number(v).toFixed(2)}} km`; }}
+    function fmtL(v)  {{ return `${{Number(v).toFixed(2)}} L`; }}
+    function fmtPct(v) {{ return `${{Number(v).toFixed(1)}} %`; }}
+
+    function routeDayLabel(day) {{
+      const parsed = new Date(`${{day}}T00:00:00Z`);
+      if (Number.isNaN(parsed.getTime())) return day;
+      return parsed.toLocaleDateString("en-GB", {{ timeZone: "UTC", month: "short", day: "numeric" }});
+    }}
+
+    function initRouteView() {{
+      if (!routesData || routesData.length === 0) {{
+        document.getElementById("no-routes-msg").style.display = "block";
+        document.getElementById("route-content").style.display = "none";
+        return;
+      }}
+
+      // Initialise route map
+      routeMap = L.map("route-map", {{ zoomControl: true }}).setView([{center_lat}, {center_lon}], 14);
+      L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }}).addTo(routeMap);
+
+      // Draw street backdrop (lighter, thinner)
+      streets.forEach(line => {{
+        L.polyline(line, {{ color: "#c0c8d8", weight: 1.5, opacity: 0.6 }}).addTo(routeMap);
+      }});
+
+      regularPolyline = L.polyline([], {{ color: "#6b7280", weight: 3.5, opacity: 0.85, dashArray: "8 5" }}).addTo(routeMap);
+      optimisedPolyline = L.polyline([], {{ color: "#22c55e", weight: 3.5, opacity: 0.9 }}).addTo(routeMap);
+      depotMarker = L.circleMarker([{center_lat}, {center_lon}], {{
+        radius: 8, fillColor: "#f59e0b", color: "#92400e", weight: 2, fillOpacity: 1
+      }}).bindTooltip("Depot (centroid)").addTo(routeMap);
+
+      // Charts
+      const distCtx = document.getElementById("dist-chart").getContext("2d");
+      const fuelCtx = document.getElementById("fuel-chart").getContext("2d");
+      const routeDates = routesData.map(r => routeDayLabel(r.date));
+
+      distChart = new Chart(distCtx, {{
+        type: "bar",
+        data: {{
+          labels: routeDates,
+          datasets: [
+            {{ label: "Regular (km)", data: routesData.map(r => r.regular.distance_km), backgroundColor: "#6b7280" }},
+            {{ label: "ML-Optimised (km)", data: routesData.map(r => r.optimised.distance_km), backgroundColor: "#22c55e" }},
+          ]
+        }},
+        options: {{
+          responsive: true, maintainAspectRatio: false,
+          plugins: {{ legend: {{ position: "bottom", labels: {{ boxWidth: 14, font: {{ size: 11 }} }} }} }},
+          scales: {{ y: {{ beginAtZero: true, title: {{ display: true, text: "km" }} }} }}
+        }}
+      }});
+
+      fuelChart = new Chart(fuelCtx, {{
+        type: "bar",
+        data: {{
+          labels: routeDates,
+          datasets: [
+            {{ label: "Regular (L)", data: routesData.map(r => r.regular.fuel_l), backgroundColor: "#6b7280" }},
+            {{ label: "ML-Optimised (L)", data: routesData.map(r => r.optimised.fuel_l), backgroundColor: "#22c55e" }},
+          ]
+        }},
+        options: {{
+          responsive: true, maintainAspectRatio: false,
+          plugins: {{ legend: {{ position: "bottom", labels: {{ boxWidth: 14, font: {{ size: 11 }} }} }} }},
+          scales: {{ y: {{ beginAtZero: true, title: {{ display: true, text: "litres" }} }} }}
+        }}
+      }});
+
+      // Summary table
+      const totalRegDist = routesData.reduce((s, r) => s + r.regular.distance_km, 0);
+      const totalOptDist = routesData.reduce((s, r) => s + r.optimised.distance_km, 0);
+      const totalRegFuel = routesData.reduce((s, r) => s + r.regular.fuel_l, 0);
+      const totalOptFuel = routesData.reduce((s, r) => s + r.optimised.fuel_l, 0);
+      const totalSavedDist = routesData.reduce((s, r) => s + r.saved_km, 0);
+      const totalSavedFuel = routesData.reduce((s, r) => s + r.saved_l, 0);
+      const avgPct = routesData.reduce((s, r) => s + r.savings_pct, 0) / routesData.length;
+
+      document.getElementById("savings-table").innerHTML = `
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="border-bottom:1px solid #e2e8f0">
+            <th style="text-align:left;padding:4px 6px;font-size:0.78rem;color:#64748b">Metric</th>
+            <th style="text-align:right;padding:4px 6px;font-size:0.78rem;color:#6b7280">Regular</th>
+            <th style="text-align:right;padding:4px 6px;font-size:0.78rem;color:#22c55e">ML-Opt.</th>
+            <th style="text-align:right;padding:4px 6px;font-size:0.78rem;color:#0ea5e9">Saved</th>
+          </tr></thead>
+          <tbody>
+            <tr><td style="padding:4px 6px">Total distance</td>
+                <td style="text-align:right;padding:4px 6px">${{fmtKm(totalRegDist)}}</td>
+                <td style="text-align:right;padding:4px 6px">${{fmtKm(totalOptDist)}}</td>
+                <td style="text-align:right;padding:4px 6px"><span class="savings-badge">${{fmtKm(totalSavedDist)}}</span></td></tr>
+            <tr><td style="padding:4px 6px">Total fuel</td>
+                <td style="text-align:right;padding:4px 6px">${{fmtL(totalRegFuel)}}</td>
+                <td style="text-align:right;padding:4px 6px">${{fmtL(totalOptFuel)}}</td>
+                <td style="text-align:right;padding:4px 6px"><span class="savings-badge">${{fmtL(totalSavedFuel)}}</span></td></tr>
+            <tr><td style="padding:4px 6px">Avg. daily saving</td>
+                <td colspan="2" style="text-align:right;padding:4px 6px">—</td>
+                <td style="text-align:right;padding:4px 6px"><span class="savings-badge">${{fmtPct(avgPct)}}</span></td></tr>
+          </tbody>
+        </table>`;
+
+      // Wire up route-toggle buttons
+      document.getElementById("show-both-btn").addEventListener("click", () => setRouteShow("both"));
+      document.getElementById("show-regular-btn").addEventListener("click", () => setRouteShow("regular"));
+      document.getElementById("show-opt-btn").addEventListener("click", () => setRouteShow("optimised"));
+
+      updateRouteDay(0);
+    }}
+
+    function setRouteShow(which) {{
+      routeViewState.show = which;
+      document.getElementById("show-both-btn").classList.toggle("active", which === "both");
+      document.getElementById("show-regular-btn").classList.toggle("active", which === "regular");
+      document.getElementById("show-opt-btn").classList.toggle("active", which === "optimised");
+      updateRouteDay(routeViewState.dayIndex);
+    }}
+
+    function updateRouteDay(dayIdx) {{
+      if (!routesData || routesData.length === 0 || !routeMap) return;
+      routeViewState.dayIndex = dayIdx;
+      const entry = routesData[dayIdx];
+      if (!entry) return;
+
+      const show = routeViewState.show;
+      regularPolyline.setLatLngs(show !== "optimised" ? entry.regular.coords : []);
+      optimisedPolyline.setLatLngs(show !== "regular" ? entry.optimised.coords : []);
+
+      const savedPct = entry.savings_pct;
+      document.getElementById("route-summary-day").textContent = routeDayLabel(entry.date);
+      document.getElementById("route-summary-dist").innerHTML =
+        `${{fmtKm(entry.saved_km)}} <span class="savings-badge">${{fmtPct(savedPct)}}</span>`;
+      document.getElementById("route-summary-fuel").textContent = fmtL(entry.saved_l);
+      document.getElementById("route-summary-pct").innerHTML =
+        `<span class="savings-badge">${{entry.optimised.bins}} / ${{entry.regular.bins}} bins visited</span>`;
+
+      // Fit map to visible route
+      const visible = [];
+      if (show !== "optimised") entry.regular.coords.forEach(c => visible.push(c));
+      if (show !== "regular") entry.optimised.coords.forEach(c => visible.push(c));
+      if (visible.length > 1) routeMap.fitBounds(visible, {{ padding: [24, 24] }});
+    }}
+
+    // Wire day slider to both views
+    daySlider.addEventListener("input", event => {{
+      const idx = Number(event.target.value || 0);
+      viewState.dayIndex = idx;
+      dayLabelEl.textContent = dayLabel(idx);
+      updateMapColors(idx);
+      if (routesData && routesData.length > 0) {{
+        // find the closest routes day index
+        const routeIdx = Math.min(idx, routesData.length - 1);
+        updateRouteDay(routeIdx);
+      }}
+    }});
+
+    // Lazy-init route view on first activation
+    let routeViewInitialised = false;
+    routeTab.addEventListener("click", () => {{
+      if (!routeViewInitialised) {{
+        routeViewInitialised = true;
+        initRouteView();
+      }}
+      requestAnimationFrame(() => {{ if (routeMap) routeMap.invalidateSize(); }});
+    }});
+
   </script>
 </body>
 </html>
@@ -764,6 +1172,7 @@ def main() -> None:
     bins_csv = gen_dir / "bins.csv"
     streets_csv = gen_dir / "street_lines.csv"
     waste_events_csv = gen_dir / "waste_events.csv"
+    routes_json = gen_dir / "routes.json"
     output_html = gen_dir / "visualization.html"
 
     missing = [str(path) for path in (pois_csv, bins_csv, streets_csv, waste_events_csv) if not path.exists()]
@@ -777,6 +1186,7 @@ def main() -> None:
     bins = read_bins(bins_csv)
     street_lines = read_street_lines(streets_csv)
     waste_events = read_waste_events(waste_events_csv)
+    routes_data = read_routes_data(routes_json)
     day_labels, day_totals, load_series = compute_bin_load_series(waste_events, bins)
     center_lat, center_lon = compute_center(pois, bins, street_lines)
 
@@ -789,11 +1199,16 @@ def main() -> None:
         load_series,
         center_lat,
         center_lon,
+        routes_data,
     )
     output_html.write_text(html, encoding="utf-8")
 
     print(f"HTML visualization written to: {output_html}")
     print(f"Loaded {len(pois)} POIs, {len(bins)} bins, {len(street_lines)} street lines, and {len(waste_events)} waste events")
+    if routes_data:
+        print(f"Route comparison data: {len(routes_data)} days embedded")
+    else:
+        print("Route comparison data not found — run route_optimizer.py first")
 
 
 if __name__ == "__main__":
