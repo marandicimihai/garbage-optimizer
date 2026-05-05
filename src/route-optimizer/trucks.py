@@ -11,8 +11,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 
 
-DEFAULT_OUTPUT = "generated/truck_routes.csv"
-EMISSION_FACTOR_KG_PER_KM = 1.0
+DEFAULT_OUTPUT = "truck_routes.csv"
+EMISSION_FACTOR_KG_PER_KM = 2.0
 
 
 def project_root() -> Path:
@@ -20,7 +20,7 @@ def project_root() -> Path:
 
 
 def generated_dir() -> Path:
-	return project_root() / "generated"
+	return project_root() / "src" / "route-optimizer" / "generated"
 
 
 def bins_path() -> Path:
@@ -36,7 +36,7 @@ def streets_path() -> Path:
 
 
 def output_path() -> Path:
-	return project_root() / DEFAULT_OUTPUT
+	return generated_dir() / DEFAULT_OUTPUT
 
 
 def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -238,10 +238,12 @@ def compute_bin_priority_scores(
 	day_index_val: int,
 	fullness_predictions: dict[int, float],
 ) -> dict[int, float]:
+	series_length = len(next(iter(daily_loads.values()), []))
+	empty_series = [0.0] * series_length
 	scores = {}
 	for bin_item in bins:
 		bin_id = int(bin_item["binId"])
-		current = daily_loads.get(bin_id, [0.0] * 10)[day_index_val]
+		current = daily_loads.get(bin_id, empty_series)[day_index_val]
 		predicted = fullness_predictions.get(bin_id, 0.5)
 		combined_fullness = min(1.0, (current / 100.0) + predicted * 0.5)
 		scores[bin_id] = combined_fullness
@@ -385,41 +387,95 @@ def build_route_path(
 	return path_coords
 
 
-def build_routes(
+def build_routes_for_mode(
 	bins: list[dict[str, float | int]],
 	waste_events: list[dict[str, object]],
+	route_type: str,
+	depot: tuple[float, float],
+	graph: dict[tuple[float, float], list[tuple[tuple[float, float], float]]],
+	nodes: list[tuple[float, float]],
+	bin_nodes: dict[int, tuple[float, float]],
+	daily_loads: dict[int, list[float]],
+	day_labels: list[str],
+	day_index: dict[str, int],
+	model: LinearRegression,
+	scaler: StandardScaler,
 ) -> list[dict[str, object]]:
-	day_labels = sorted({str(event["date"]) for event in waste_events})
-	if not day_labels:
-		return []
-
-	day_index = {label: index for index, label in enumerate(day_labels)}
-	
-	daily_loads, X, y = build_waste_matrix(bins, waste_events, day_labels)
-	
-	model, scaler = train_fullness_model(X, y)
-
-	depot = compute_depot(bins)
-	street_lines = read_street_lines(streets_path())
-	graph, nodes = build_graph(street_lines)
-	bin_nodes = {int(bin_item["binId"]): nearest_node((float(bin_item["lat"]), float(bin_item["lon"])), nodes) for bin_item in bins}
-
 	routes: list[dict[str, object]] = []
+	shared_order: list[dict[str, float | int]] | None = None
+	shared_route_path: list[list[float]] | None = None
+	shared_distance_m = 0.0
+	shared_co2_kg = 0.0
+	if route_type == "normal":
+		shared_order = route_order(bins, depot, bin_nodes, graph)
+		shared_route_path = build_route_path(depot, shared_order, bin_nodes, graph)
+		shared_distance_m = round(route_distance_m(depot, shared_order, bin_nodes, graph), 3)
+		shared_co2_kg = round((shared_distance_m / 1000.0) * EMISSION_FACTOR_KG_PER_KM, 3)
+
 	for label in day_labels:
 		index = day_index[label]
-		
-		fullness_predictions = predict_bin_fullness_for_day(
-			bins, waste_events, label, model, scaler, daily_loads, day_labels
-		)
-		
-		ordered_bins = route_order_ml(
-			bins, depot, bin_nodes, graph, daily_loads, index, fullness_predictions, min_fullness_threshold=0.15
-		)
-		
-		route_path = build_route_path(depot, ordered_bins, bin_nodes, graph)
-		distance_m = round(route_distance_m(depot, ordered_bins, bin_nodes, graph), 3)
-		co2_kg = round((distance_m / 1000.0) * EMISSION_FACTOR_KG_PER_KM, 3)
-		
+		if route_type == "normal":
+			ordered_bins = shared_order or []
+		else:
+			fullness_predictions = predict_bin_fullness_for_day(
+				bins, waste_events, label, model, scaler, daily_loads, day_labels
+			)
+			ordered_bins = route_order_ml(
+				bins,
+				depot,
+				bin_nodes,
+				graph,
+				daily_loads,
+				index,
+				fullness_predictions,
+				min_fullness_threshold=0.15,
+			)
+
+		if route_type == "normal":
+			route_path = shared_route_path or [[round(depot[0], 6), round(depot[1], 6)]]
+			distance_m = shared_distance_m
+			co2_kg = shared_co2_kg
+		else:
+			route_path = build_route_path(depot, ordered_bins, bin_nodes, graph)
+			distance_m = round(route_distance_m(depot, ordered_bins, bin_nodes, graph), 3)
+			co2_kg = round((distance_m / 1000.0) * EMISSION_FACTOR_KG_PER_KM, 3)
+
+		# Ensure any bins that lie on the computed route path and have
+		# non-zero collection for this day are included in the ordered list.
+		# This covers bins that are located on intermediate nodes the truck
+		# passes by but were excluded by the priority selection.
+		if route_path:
+			path_node_set = {(round(n[0], 6), round(n[1], 6)) for n in route_path}
+			existing_ids = {int(b["binId"]) for b in ordered_bins}
+			extra_bins: list[dict[str, float | int]] = []
+			for bin_item in bins:
+				bid = int(bin_item["binId"])
+				if bid in existing_ids:
+					continue
+				node = bin_nodes.get(bid)
+				if not node:
+					continue
+				if (round(node[0], 6), round(node[1], 6)) in path_node_set:
+					collected = daily_loads.get(bid, [0.0] * len(day_labels))[index]
+					if collected and float(collected) > 1e-9:
+						extra_bins.append(bin_item)
+
+			if extra_bins:
+				# merge ordered_bins and extra_bins, sorting by their position on the path
+				def path_pos_for(bin_item: dict[str, float | int]) -> int:
+					node = bin_nodes.get(int(bin_item["binId"]))
+					if not node:
+						return 10**9
+					rounded = (round(node[0], 6), round(node[1], 6))
+					for i, n in enumerate(route_path):
+						if (round(n[0], 6), round(n[1], 6)) == rounded:
+							return i
+					return 10**9
+
+				combined = list(ordered_bins) + list(extra_bins)
+				combined.sort(key=path_pos_for)
+				ordered_bins = combined
+
 		day_collection = 0.0
 		for bin_item in ordered_bins:
 			day_collection += daily_loads.get(int(bin_item["binId"]), [0.0] * len(day_labels))[index]
@@ -427,7 +483,9 @@ def build_routes(
 		for stop_order, bin_item in enumerate(ordered_bins):
 			routes.append(
 				{
+					"route_type": route_type,
 					"date": label,
+					"day_index": index,
 					"stop_order": stop_order,
 					"binId": int(bin_item["binId"]),
 					"lat": round(float(bin_item["lat"]), 6),
@@ -445,12 +503,70 @@ def build_routes(
 	return routes
 
 
+def build_routes(
+	bins: list[dict[str, float | int]],
+	waste_events: list[dict[str, object]],
+) -> list[dict[str, object]]:
+	day_labels = sorted({str(event["date"]) for event in waste_events})
+	if not day_labels:
+		return []
+
+	day_index = {label: index for index, label in enumerate(day_labels)}
+	daily_loads, X, y = build_waste_matrix(bins, waste_events, day_labels)
+	model, scaler = train_fullness_model(X, y)
+
+	depot = compute_depot(bins)
+	street_lines = read_street_lines(streets_path())
+	graph, nodes = build_graph(street_lines)
+	bin_nodes = {
+		int(bin_item["binId"]): nearest_node((float(bin_item["lat"]), float(bin_item["lon"])), nodes)
+		for bin_item in bins
+	}
+
+	routes: list[dict[str, object]] = []
+	routes.extend(
+		build_routes_for_mode(
+			bins,
+			waste_events,
+			"normal",
+			depot,
+			graph,
+			nodes,
+			bin_nodes,
+			daily_loads,
+			day_labels,
+			day_index,
+			model,
+			scaler,
+		)
+	)
+	routes.extend(
+		build_routes_for_mode(
+			bins,
+			waste_events,
+			"ml",
+			depot,
+			graph,
+			nodes,
+			bin_nodes,
+			daily_loads,
+			day_labels,
+			day_index,
+			model,
+			scaler,
+		)
+	)
+	return routes
+
+
 def write_routes(path: Path, routes: list[dict[str, object]]) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	with path.open("w", encoding="utf-8", newline="") as file_handle:
 		writer = csv.writer(file_handle)
 		writer.writerow([
+			"route_type",
 			"date",
+			"day_index",
 			"stop_order",
 			"binId",
 			"lat",
@@ -465,7 +581,9 @@ def write_routes(path: Path, routes: list[dict[str, object]]) -> None:
 		])
 		for route in routes:
 			writer.writerow([
+				route["route_type"],
 				route["date"],
+				route["day_index"],
 				route["stop_order"],
 				route["binId"],
 				route["lat"],
@@ -505,7 +623,8 @@ def main() -> None:
 
 	write_routes(output_file, routes)
 	day_count = len({route["date"] for route in routes})
-	print(f"Saved {len(routes)} truck sweep rows across {day_count} days to {output_file}")
+	mode_count = len({route["route_type"] for route in routes})
+	print(f"Saved {len(routes)} truck sweep rows across {day_count} days and {mode_count} truck modes to {output_file}")
 
 
 if __name__ == "__main__":

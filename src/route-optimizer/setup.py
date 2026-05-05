@@ -38,7 +38,7 @@ def main() -> None:
         print(f"Script failed: {exc}")
         sys.exit(exc.returncode)
 
-    html = root / "generated" / "visualization.html"
+    html = root / "src" / "route-optimizer" / "generated" / "visualization.html"
     if html.exists():
         webbrowser.open_new_tab(html.as_uri())
         print(f"Opened: {html}")

@@ -33,11 +33,11 @@ def project_root() -> Path:
 
 
 def street_lines_path() -> Path:
-	return project_root() / "generated" / "street_lines.csv"
+	return project_root() / "src" / "route-optimizer" / "generated" / "street_lines.csv"
 
 
 def bins_path() -> Path:
-	return project_root() / "generated" / "bins.csv"
+	return project_root() / "src" / "route-optimizer" / "generated" / "bins.csv"
 
 
 def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:

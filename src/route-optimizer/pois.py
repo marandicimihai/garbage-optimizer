@@ -49,7 +49,7 @@ def main():
 	distance_meters = 1000
 	requests_timeout = 60
 	
-	pois_output = "generated/pois.csv"
+	pois_output = Path(__file__).resolve().parent / "generated" / "pois.csv"
 
 	ox.settings.requests_timeout = requests_timeout
 
@@ -65,7 +65,7 @@ def main():
 			"Try again later, increase requests_timeout, or reduce distance_meters."
 		) from exc
 
-	Path(pois_output).parent.mkdir(parents=True, exist_ok=True)
+	pois_output.parent.mkdir(parents=True, exist_ok=True)
 	pois = clean_pois(raw)
 	pois = pois.drop(columns=["amenity", "shop"])
 	pois.to_csv(pois_output, index=False)

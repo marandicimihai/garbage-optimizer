@@ -9,7 +9,7 @@ import osmnx as ox
 
 DEFAULT_PLACE = "Chisinau, Moldova"
 DEFAULT_DISTANCE_METERS = 1000
-DEFAULT_OUTPUT = "generated/street_lines.csv"
+DEFAULT_OUTPUT = "street_lines.csv"
 DEFAULT_GRID_SIZE = 100
 
 
@@ -58,9 +58,17 @@ def fetch_street_lines(place: str, distance_meters: int) -> list[list[tuple[floa
     return lines
 
 
+def generated_dir() -> Path:
+    return Path(__file__).resolve().parent / "generated"
+
+
+def output_path() -> Path:
+    return generated_dir() / DEFAULT_OUTPUT
+
+
 def save_street_lines_csv(
     lines: list[list[tuple[float, float]]],
-    output_path: str,
+    output_path: str | Path,
 ) -> None:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +85,7 @@ def save_street_lines_csv(
 def main() -> None:
     place = DEFAULT_PLACE
     distance_meters = DEFAULT_DISTANCE_METERS
-    output = DEFAULT_OUTPUT
+    output = output_path()
 
     lines = fetch_street_lines(place, distance_meters)
 

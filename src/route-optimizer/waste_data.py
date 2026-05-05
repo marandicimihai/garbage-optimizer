@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-DEFAULT_OUTPUT = "generated/waste_events.csv"
+DEFAULT_OUTPUT = "waste_events.csv"
 DEFAULT_SEED = 42
 DAY_COUNT = 7
 DAY_START = datetime(2026, 5, 3, tzinfo=timezone.utc)
@@ -62,16 +62,20 @@ def project_root() -> Path:
 	return Path(__file__).resolve().parents[2]
 
 
+def generated_dir() -> Path:
+	return project_root() / "src" / "route-optimizer" / "generated"
+
+
 def pois_path() -> Path:
-	return project_root() / "generated" / "pois.csv"
+	return generated_dir() / "pois.csv"
 
 
 def bins_path() -> Path:
-	return project_root() / "generated" / "bins.csv"
+	return generated_dir() / "bins.csv"
 
 
 def output_path() -> Path:
-	return project_root() / DEFAULT_OUTPUT
+	return generated_dir() / DEFAULT_OUTPUT
 
 
 def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
