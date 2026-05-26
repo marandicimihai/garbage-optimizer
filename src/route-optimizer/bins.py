@@ -8,6 +8,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from geometry import normalize_street_lines
+
 
 DEFAULT_SPACING_METERS = 60.0
 
@@ -78,7 +80,7 @@ def read_street_lines(path: Path) -> list[list[tuple[float, float]]]:
 		coords = [(lat, lon) for _, lat, lon in ordered]
 		if len(coords) >= 2:
 			lines.append(coords)
-	return lines
+	return normalize_street_lines(lines)
 
 
 def build_graph(lines: list[list[tuple[float, float]]]) -> tuple[dict[tuple[float, float], list[int]], dict[int, Edge], dict[tuple[float, float], int], list[tuple[float, float]]]:

@@ -6,6 +6,8 @@ import csv
 import numpy as np
 import osmnx as ox
 
+from geometry import normalize_street_lines
+
 
 DEFAULT_PLACE = "Chisinau, Moldova"
 DEFAULT_DISTANCE_METERS = 1000
@@ -55,7 +57,7 @@ def fetch_street_lines(place: str, distance_meters: int) -> list[list[tuple[floa
                     line = [(lat, lon) for lon, lat in coords]
                     if len(line) >= 2:
                         lines.append(line)
-    return lines
+    return normalize_street_lines(lines)
 
 
 def generated_dir() -> Path:

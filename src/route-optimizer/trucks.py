@@ -10,9 +10,12 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 
+from geometry import normalize_street_lines
+
 
 DEFAULT_OUTPUT = "truck_routes.csv"
 EMISSION_FACTOR_KG_PER_KM = 2.0
+DEFAULT_SWEEP_GRID_METERS = 200.0
 
 
 def project_root() -> Path:
@@ -101,7 +104,7 @@ def read_street_lines(path: Path) -> list[list[tuple[float, float]]]:
 		coords = [(lat, lon) for _, lat, lon in ordered]
 		if len(coords) >= 2:
 			polylines.append(coords)
-	return polylines
+	return normalize_street_lines(polylines)
 
 
 def build_graph(lines: list[list[tuple[float, float]]]) -> tuple[dict[tuple[float, float], list[tuple[tuple[float, float], float]]], list[tuple[float, float]]]:
@@ -116,6 +119,192 @@ def build_graph(lines: list[list[tuple[float, float]]]) -> tuple[dict[tuple[floa
 	for node in list(graph):
 		graph.setdefault(node, [])
 	return graph, list(graph)
+
+
+def insert_bins_into_lines(lines: list[list[tuple[float, float]]], bins: list[dict[str, float | int]]) -> tuple[list[list[tuple[float, float]]], dict[int, tuple[float, float]]]:
+	"""Insert projected bin points into polylines by splitting segments.
+
+	Returns (new_lines, mapping binId -> projected latlon).
+	"""
+	bin_to_best: dict[int, tuple[int, int, float, tuple[float, float]]] = {}
+	# iterate lines and segments to find best projection for each bin
+	for line_idx, line in enumerate(lines):
+		for seg_idx, (a, b) in enumerate(zip(line, line[1:])):
+			a_latlon = a
+			b_latlon = b
+			for bitem in bins:
+				bid = int(bitem["binId"])
+				point = (float(bitem["lat"]), float(bitem["lon"]))
+				proj, dist = project_point_on_segment(point, a_latlon, b_latlon)
+				# store best across all lines/segments
+				prev = bin_to_best.get(bid)
+				if prev is None or dist < prev[2]:
+					bin_to_best[bid] = (line_idx, seg_idx, dist, proj)
+
+	# prepare new lines with inserted projection points
+	new_lines: list[list[tuple[float, float]]] = []
+	# mapping bin id -> proj coordinate
+	bin_proj_map: dict[int, tuple[float, float]] = {}
+
+	for line_idx, line in enumerate(lines):
+		# collect inserts for this line: per segment index a list of (t, proj)
+		inserts_by_seg: dict[int, list[tuple[float, tuple[float, float]]]] = {}
+		for bid, (li, seg_idx, dist, proj) in list(bin_to_best.items()):
+			if li != line_idx:
+				continue
+			# compute t along segment for ordering
+			a = line[seg_idx]
+			b = line[seg_idx + 1]
+			# compute t in local meters
+			mean_lat = math.radians((a[0] + b[0] + proj[0]) / 3.0)
+			cos_lat = math.cos(mean_lat)
+			deg_to_m = 111000.0
+			ax = a[1] * deg_to_m * cos_lat
+			ay = a[0] * deg_to_m
+			bx = b[1] * deg_to_m * cos_lat
+			by = b[0] * deg_to_m
+			px = proj[1] * deg_to_m * cos_lat
+			py = proj[0] * deg_to_m
+			vx = bx - ax
+			vy = by - ay
+			denom = vx * vx + vy * vy
+			if denom == 0.0:
+				t = 0.0
+			else:
+				t = ((px - ax) * vx + (py - ay) * vy) / denom
+				t = max(0.0, min(1.0, t))
+			inserts_by_seg.setdefault(seg_idx, []).append((t, proj, bid))
+
+		# build new line
+		new_pts: list[tuple[float, float]] = []
+		for idx, pt in enumerate(line):
+			new_pts.append(pt)
+			if idx < len(line) - 1:
+				seg_inserts = inserts_by_seg.get(idx, [])
+				if seg_inserts:
+					seg_inserts.sort(key=lambda x: x[0])
+					for t, proj, bid in seg_inserts:
+						# avoid duplicates very close to existing points
+						last = new_pts[-1]
+						if abs(last[0] - proj[0]) < 1e-7 and abs(last[1] - proj[1]) < 1e-7:
+							continue
+						new_pts.append(proj)
+						bin_proj_map[bid] = proj
+		# ensure line has at least two points
+		if len(new_pts) >= 2:
+			new_lines.append(new_pts)
+
+	return new_lines, bin_proj_map
+
+
+def project_point_on_segment(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> tuple[tuple[float, float], float]:
+	"""Project `point` (lat,lon) to segment a->b. Returns (proj_latlon, distance_m).
+
+	Uses a local equirectangular projection for small distances.
+	"""
+	lat, lon = point
+	lat1, lon1 = a
+	lat2, lon2 = b
+	mean_lat = math.radians((lat1 + lat2 + lat) / 3.0)
+	cos_lat = math.cos(mean_lat)
+	deg_to_m = 111000.0
+	ax = (lon1 - lon) * deg_to_m * cos_lat
+	ay = (lat1 - lat) * deg_to_m
+	bx = (lon2 - lon) * deg_to_m * cos_lat
+	by = (lat2 - lat) * deg_to_m
+	px = 0.0
+	py = 0.0
+	vx = bx - ax
+	vy = by - ay
+	wvx = -ax
+	wvy = -ay
+	denom = vx * vx + vy * vy
+	if denom == 0.0:
+		t = 0.0
+	else:
+		t = (wvx * vx + wvy * vy) / denom
+		t = max(0.0, min(1.0, t))
+	proj_x = ax + t * vx
+	proj_y = ay + t * vy
+	# convert back to lat/lon
+	proj_lon = lon + proj_x / (deg_to_m * cos_lat)
+	proj_lat = lat + proj_y / deg_to_m
+	distance = haversine_m((lat, lon), (proj_lat, proj_lon))
+	return (proj_lat, proj_lon), distance
+
+
+def point_to_segment_distance_m(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+	proj, dist = project_point_on_segment(point, a, b)
+	return dist
+
+
+def add_bins_to_graph(
+	graph: dict[tuple[float, float], list[tuple[tuple[float, float], float]]],
+	bins: list[dict[str, float | int]],
+) -> dict[tuple[float, float], list[tuple[tuple[float, float], float]]]:
+	"""Split nearest graph edges and insert nodes at bin projections.
+
+	Mutates and returns the graph with new nodes added for each bin.
+	"""
+	# build list of edges
+	edges = []
+	for u, neighbors in graph.items():
+		for v, w in neighbors:
+			# only include each undirected edge once (u < v by tuple compare)
+			if u < v:
+				edges.append((u, v))
+
+	for b in bins:
+		point = (float(b["lat"]), float(b["lon"]))
+		best = None
+		best_dist = float("inf")
+		best_proj = None
+		best_edge = None
+		for u, v in edges:
+			proj, dist = project_point_on_segment(point, u, v)
+			if dist < best_dist:
+				best_dist = dist
+				best = proj
+				best_edge = (u, v)
+		if best is None or best_edge is None:
+			continue
+		proj = best
+		u, v = best_edge
+		# if projection equals an existing node (within 1e-6 deg), reuse it
+		def close(a, b):
+			return abs(a[0] - b[0]) < 1e-6 and abs(a[1] - b[1]) < 1e-6
+
+		reuse_node = None
+		for node in (u, v):
+			if close(node, proj):
+				reuse_node = node
+				break
+		if reuse_node is not None:
+			b_node = reuse_node
+		else:
+			# create new node at proj and split edge u-v
+			# remove v from u's neighbors and u from v's neighbors
+			# note: use list copies to avoid mutating during iteration
+			def remove_neighbor(a, bnode):
+				lst = graph.get(a, [])
+				graph[a] = [t for t in lst if not (abs(t[0][0] - bnode[0]) < 1e-9 and abs(t[0][1] - bnode[1]) < 1e-9)]
+
+			remove_neighbor(u, v)
+			remove_neighbor(v, u)
+			dist_u_proj = haversine_m(u, proj)
+			dist_proj_v = haversine_m(proj, v)
+			# attach new proj node
+			graph.setdefault(u, []).append((proj, dist_u_proj))
+			graph.setdefault(v, []).append((proj, dist_proj_v))
+			graph.setdefault(proj, []).append((u, dist_u_proj))
+			graph.setdefault(proj, []).append((v, dist_proj_v))
+			b_node = proj
+			edges.append((u, proj))
+			edges.append((proj, v))
+		# annotate bin with node coordinate so callers can use it
+		b["_graph_node"] = b_node
+
+	return graph
 
 
 def dijkstra_paths(
@@ -240,15 +429,112 @@ def compute_bin_priority_scores(
 ) -> dict[int, float]:
 	series_length = len(next(iter(daily_loads.values()), []))
 	empty_series = [0.0] * series_length
+	daily_peak = 0.0
+	for bin_item in bins:
+		bin_id = int(bin_item["binId"])
+		daily_peak = max(daily_peak, daily_loads.get(bin_id, empty_series)[day_index_val])
+	if daily_peak <= 0.0:
+		daily_peak = 1.0
 	scores = {}
 	for bin_item in bins:
 		bin_id = int(bin_item["binId"])
 		current = daily_loads.get(bin_id, empty_series)[day_index_val]
 		predicted = fullness_predictions.get(bin_id, 0.5)
-		combined_fullness = min(1.0, (current / 100.0) + predicted * 0.5)
+		current_score = min(1.0, current / daily_peak)
+		combined_fullness = min(1.0, current_score * 0.7 + predicted * 0.6)
 		scores[bin_id] = combined_fullness
 	
 	return scores
+
+
+def select_normal_route_bins(
+	bins: list[dict[str, float | int]],
+	daily_loads: dict[int, list[float]],
+	day_index_val: int,
+) -> list[dict[str, float | int]]:
+	series_length = len(next(iter(daily_loads.values()), []))
+	empty_series = [0.0] * series_length
+	loads = sorted(
+		[
+			(
+				daily_loads.get(int(bin_item["binId"]), empty_series)[day_index_val],
+				bin_item,
+			)
+			for bin_item in bins
+		],
+		key=lambda item: (item[0], int(item[1]["binId"])),
+		reverse=True,
+	)
+	if not loads:
+		return []
+
+	peak = loads[0][0]
+	if peak <= 0.0:
+		return [bin_item for _, bin_item in loads[: max(1, len(bins) // 10)]]
+
+	cutoff = max(peak * 0.35, 0.05)
+	selected = [bin_item for load, bin_item in loads if load >= cutoff]
+	if not selected:
+		selected = [bin_item for _, bin_item in loads[: max(1, len(bins) // 10)]]
+	return selected
+
+
+def sweep_order(
+	bins: list[dict[str, float | int]],
+	grid_meters: float = DEFAULT_SWEEP_GRID_METERS,
+) -> list[dict[str, float | int]]:
+	"""Return a boustrophedon ordering aligned with the city's principal axis.
+
+	We project bin coordinates into a local meter-space, compute the principal
+	axis using SVD, rotate points so the principal axis becomes the X axis,
+	then perform a lawnmower sweep across Y bands. This produces long straight
+	passes that follow the dominant city orientation instead of strictly
+	north-south.
+	"""
+	if not bins:
+		return []
+
+	lat_arr = np.array([float(b["lat"]) for b in bins])
+	lon_arr = np.array([float(b["lon"]) for b in bins])
+
+	# convert degrees to meters locally using equirectangular approx
+	mean_lat = float(lat_arr.mean())
+	mean_lon = float(lon_arr.mean())
+	deg_to_m = 111000.0
+	cos_lat = math.cos(math.radians(mean_lat))
+	xs = (lon_arr - mean_lon) * deg_to_m * cos_lat
+	ys = (lat_arr - mean_lat) * deg_to_m
+
+	points = np.column_stack((xs, ys))
+	if points.shape[0] < 2 or np.allclose(points.std(axis=0), 0.0):
+		# fallback to simple lon-based sweep
+		return sorted(bins, key=lambda b: (float(b["lat"]), float(b["lon"])))
+
+	# SVD to find principal directions
+	_, _, vt = np.linalg.svd(points - points.mean(axis=0), full_matrices=False)
+	rotation = vt.T  # columns are principal directions
+	rotated = (points - points.mean(axis=0)).dot(rotation)
+
+	min_y = rotated[:, 1].min()
+
+	rows: dict[int, list[tuple[dict[str, float | int], float]]] = {}
+	for idx, b in enumerate(bins):
+		y = float(rotated[idx, 1])
+		row = int((y - min_y) // grid_meters)
+		rows.setdefault(row, []).append((b, float(rotated[idx, 0])))
+
+	ordered: list[dict[str, float | int]] = []
+	for i, row in enumerate(sorted(rows.keys())):
+		row_bins = rows[row]
+		reverse = (i % 2) == 1
+		row_bins_sorted = sorted(row_bins, key=lambda t: t[1], reverse=reverse)
+		for b, x in row_bins_sorted:
+			# annotate bins with sweep metadata so callers can group by row
+			b["_sweep_row"] = row
+			b["_sweep_x"] = x
+			ordered.append(b)
+
+	return ordered
 
 
 def route_order_ml(
@@ -262,19 +548,25 @@ def route_order_ml(
 	min_fullness_threshold: float = 0.2,
 ) -> list[dict[str, float | int]]:
 	priority_scores = compute_bin_priority_scores(bins, daily_loads, day_index_val, fullness_predictions)
-	
-	bins_by_priority = sorted(
-		bins,
-		key=lambda b: -priority_scores.get(int(b["binId"]), 0.0),
-	)
-	
-	high_priority = [
-		b for b in bins_by_priority
-		if priority_scores.get(int(b["binId"]), 0.0) >= min_fullness_threshold
-	]
-	
+	bins_by_priority = sorted(bins, key=lambda b: (-priority_scores.get(int(b["binId"]), 0.0), int(b["binId"])))
+	if not bins_by_priority:
+		return []
+
+	priority_mass = sum(priority_scores.get(int(bin_item["binId"]), 0.0) for bin_item in bins_by_priority)
+	target_mass = max(min_fullness_threshold, priority_mass * 0.4)
+	high_priority: list[dict[str, float | int]] = []
+	covered_mass = 0.0
+	for bin_item in bins_by_priority:
+		score = priority_scores.get(int(bin_item["binId"]), 0.0)
+		if score <= 0.0:
+			continue
+		high_priority.append(bin_item)
+		covered_mass += score
+		if covered_mass >= target_mass and len(high_priority) >= max(1, len(bins_by_priority) // 8):
+			break
+
 	if not high_priority:
-		high_priority = bins_by_priority[:max(1, len(bins_by_priority) // 3)]
+		high_priority = bins_by_priority[:max(1, len(bins_by_priority) // 6)]
 	
 	nodes_list = list(graph)
 	depot_node = nearest_node(depot, nodes_list)
@@ -286,7 +578,8 @@ def route_order_ml(
 	while unvisited:
 		nearest_bin_id = min(
 			unvisited.keys(),
-			key=lambda bid: street_distance(current_node, bin_nodes[bid], bin_nodes, graph),
+			key=lambda bid: street_distance(current_node, bin_nodes[bid], bin_nodes, graph)
+			/ max(0.15, priority_scores.get(bid, 0.0)),
 		)
 		bin_item = unvisited.pop(nearest_bin_id)
 		ordered.append(bin_item)
@@ -360,6 +653,15 @@ def route_distance_m(
 	return total
 
 
+def route_path_distance_m(route_path: list[list[float]]) -> float:
+	if len(route_path) < 2:
+		return 0.0
+	total = 0.0
+	for start, end in zip(route_path, route_path[1:]):
+		total += haversine_m((start[0], start[1]), (end[0], end[1]))
+	return total
+
+
 def build_route_path(
 	depot: tuple[float, float],
 	ordered_bins: list[dict[str, float | int]],
@@ -383,6 +685,7 @@ def build_route_path(
 	segment = dijkstra_paths(graph, current, nearest_node(depot, list(graph)))
 	for node in segment[1:]:
 		path_coords.append([round(node[0], 6), round(node[1], 6)])
+	# keep route strictly on-graph: do not append the raw depot coordinate
 
 	return path_coords
 
@@ -402,20 +705,41 @@ def build_routes_for_mode(
 	scaler: StandardScaler,
 ) -> list[dict[str, object]]:
 	routes: list[dict[str, object]] = []
-	shared_order: list[dict[str, float | int]] | None = None
-	shared_route_path: list[list[float]] | None = None
-	shared_distance_m = 0.0
-	shared_co2_kg = 0.0
-	if route_type == "normal":
-		shared_order = route_order(bins, depot, bin_nodes, graph)
-		shared_route_path = build_route_path(depot, shared_order, bin_nodes, graph)
-		shared_distance_m = round(route_distance_m(depot, shared_order, bin_nodes, graph), 3)
-		shared_co2_kg = round((shared_distance_m / 1000.0) * EMISSION_FACTOR_KG_PER_KM, 3)
 
 	for label in day_labels:
 		index = day_index[label]
 		if route_type == "normal":
-			ordered_bins = shared_order or []
+			# produce a single continuous on-graph sweep path visiting rows
+			sweep_bins = sweep_order(bins, grid_meters=DEFAULT_SWEEP_GRID_METERS)
+			# group bins by sweep row in order
+			rows: dict[int, list[dict[str, float | int]]] = {}
+			for b in sweep_bins:
+				rows.setdefault(int(b["_sweep_row"]), []).append(b)
+			depot_node = nearest_node(depot, nodes)
+			current_node = depot_node
+			route_path = [[round(current_node[0], 6), round(current_node[1], 6)]]
+			for row in sorted(rows.keys()):
+				row_bins = rows[row]
+				# ensure direction matches sweep ordering
+				first_node = bin_nodes[int(row_bins[0]["binId"])]
+				seg = dijkstra_paths(graph, current_node, first_node)
+				for node in seg[1:]:
+					route_path.append([round(node[0], 6), round(node[1], 6)])
+				# traverse across the row from first to last bin
+				if len(row_bins) > 1:
+					last_node = bin_nodes[int(row_bins[-1]["binId"])]
+					seg2 = dijkstra_paths(graph, first_node, last_node)
+					for node in seg2[1:]:
+						route_path.append([round(node[0], 6), round(node[1], 6)])
+					current_node = last_node
+				else:
+					current_node = first_node
+			# return to depot at end of sweep
+			seg = dijkstra_paths(graph, current_node, nearest_node(depot, nodes))
+			for node in seg[1:]:
+				route_path.append([round(node[0], 6), round(node[1], 6)])
+			# keep all bins in sweep order so the truck covers the whole city in one pass
+			ordered_bins = sweep_bins
 		else:
 			fullness_predictions = predict_bin_fullness_for_day(
 				bins, waste_events, label, model, scaler, daily_loads, day_labels
@@ -432,9 +756,9 @@ def build_routes_for_mode(
 			)
 
 		if route_type == "normal":
-			route_path = shared_route_path or [[round(depot[0], 6), round(depot[1], 6)]]
-			distance_m = shared_distance_m
-			co2_kg = shared_co2_kg
+			route_path = build_route_path(depot, ordered_bins, bin_nodes, graph)
+			distance_m = round(route_path_distance_m(route_path), 3)
+			co2_kg = round((distance_m / 1000.0) * EMISSION_FACTOR_KG_PER_KM, 3)
 		else:
 			route_path = build_route_path(depot, ordered_bins, bin_nodes, graph)
 			distance_m = round(route_distance_m(depot, ordered_bins, bin_nodes, graph), 3)
@@ -444,7 +768,7 @@ def build_routes_for_mode(
 		# non-zero collection for this day are included in the ordered list.
 		# This covers bins that are located on intermediate nodes the truck
 		# passes by but were excluded by the priority selection.
-		if route_path:
+		if route_path and route_type != "normal":
 			path_node_set = {(round(n[0], 6), round(n[1], 6)) for n in route_path}
 			existing_ids = {int(b["binId"]) for b in ordered_bins}
 			extra_bins: list[dict[str, float | int]] = []
@@ -517,11 +841,19 @@ def build_routes(
 
 	depot = compute_depot(bins)
 	street_lines = read_street_lines(streets_path())
+	# try to insert projected bin points into street polylines so they become graph nodes
+	updated_lines, bin_proj_map = insert_bins_into_lines(street_lines, bins)
+	if updated_lines:
+		street_lines = updated_lines
 	graph, nodes = build_graph(street_lines)
-	bin_nodes = {
-		int(bin_item["binId"]): nearest_node((float(bin_item["lat"]), float(bin_item["lon"])), nodes)
-		for bin_item in bins
-	}
+	# map bins to their projected node when available, otherwise nearest node
+	bin_nodes = {}
+	for bin_item in bins:
+		bid = int(bin_item["binId"])
+		if bid in bin_proj_map:
+			bin_nodes[bid] = tuple(bin_proj_map[bid])
+		else:
+			bin_nodes[bid] = nearest_node((float(bin_item["lat"]), float(bin_item["lon"])), nodes)
 
 	routes: list[dict[str, object]] = []
 	routes.extend(

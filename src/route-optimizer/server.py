@@ -2,18 +2,45 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from flask import Flask, Response, jsonify
+
+from geometry import normalize_street_lines
+
 
 def project_root() -> Path:
-    """Resolve repository root from this script location."""
     return Path(__file__).resolve().parents[2]
 
 
 def generated_dir() -> Path:
     return project_root() / "src" / "route-optimizer" / "generated"
+
+
+def pipeline_scripts() -> list[Path]:
+    root = project_root()
+    return [
+        root / "src" / "route-optimizer" / "pois.py",
+        root / "src" / "route-optimizer" / "streets.py",
+        root / "src" / "route-optimizer" / "bins.py",
+        root / "src" / "route-optimizer" / "waste_data.py",
+        root / "src" / "route-optimizer" / "trucks.py",
+    ]
+
+
+def run_route_pipeline() -> None:
+    scripts = pipeline_scripts()
+    missing = [str(script) for script in scripts if not script.exists()]
+    if missing:
+        missing_lines = "\n".join(f"- {path}" for path in missing)
+        raise FileNotFoundError("Missing pipeline scripts:\n" + missing_lines)
+
+    for script in scripts:
+        print(f"Running: {script}")
+        subprocess.run([sys.executable, str(script)], check=True)
 
 
 def read_pois(path: Path) -> list[dict[str, object]]:
@@ -51,7 +78,8 @@ def read_street_lines(path: Path) -> list[list[list[float]]]:
         coords = [[lat, lon] for _, lat, lon in ordered]
         if len(coords) >= 2:
             polylines.append(coords)
-    return polylines
+    normalized = normalize_street_lines([[(lat, lon) for lat, lon in coords] for coords in polylines])
+    return [[[lat, lon] for lat, lon in line] for line in normalized]
 
 
 def read_bins(path: Path) -> list[dict[str, float | int]]:
@@ -92,74 +120,75 @@ def read_waste_events(path: Path) -> list[dict[str, object]]:
             )
     return events
 
+
 def read_truck_routes(path: Path) -> list[dict[str, object]]:
-  routes_by_key: dict[tuple[str, str], dict[str, object]] = {}
-  csv.field_size_limit(sys.maxsize)
-  with path.open("r", encoding="utf-8", newline="") as file_handle:
-    reader = csv.DictReader(file_handle)
-    for row in reader:
-      try:
-        route_type = str(row.get("route_type", "normal"))
-        date = str(row["date"])
-        stop_order = int(row["stop_order"])
-        bin_id = int(row["binId"])
-        lat = float(row["lat"])
-        lon = float(row["lon"])
-        day_index = int(row.get("day_index", 0))
-        depot_lat = float(row["depot_lat"])
-        depot_lon = float(row["depot_lon"])
-        collected_kg = float(row["collected_kg"])
-        day_collection_kg = float(row["day_collection_kg"])
-        day_distance_m = float(row["day_distance_m"])
-        day_co2_kg = float(row["day_co2_kg"])
-        route_path = json.loads(str(row.get("route_path", "[]")))
-      except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        continue
+    routes_by_key: dict[tuple[str, str], dict[str, object]] = {}
+    csv.field_size_limit(sys.maxsize)
+    with path.open("r", encoding="utf-8", newline="") as file_handle:
+        reader = csv.DictReader(file_handle)
+        for row in reader:
+            try:
+                route_type = str(row.get("route_type", "normal"))
+                date = str(row["date"])
+                stop_order = int(row["stop_order"])
+                bin_id = int(row["binId"])
+                lat = float(row["lat"])
+                lon = float(row["lon"])
+                day_index = int(row.get("day_index", 0))
+                depot_lat = float(row["depot_lat"])
+                depot_lon = float(row["depot_lon"])
+                collected_kg = float(row["collected_kg"])
+                day_collection_kg = float(row["day_collection_kg"])
+                day_distance_m = float(row["day_distance_m"])
+                day_co2_kg = float(row["day_co2_kg"])
+                route_path = json.loads(str(row.get("route_path", "[]")))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
 
-      route = routes_by_key.setdefault(
-        (route_type, date),
-        {
-          "route_type": route_type,
-          "date": date,
-          "day_index": day_index,
-          "depot": [round(depot_lat, 6), round(depot_lon, 6)],
-          "stops": [],
-          "collected_kg": round(day_collection_kg, 3),
-          "distance_m": round(day_distance_m, 3),
-          "co2_kg": round(day_co2_kg, 3),
-          "route_path": route_path,
-        },
-      )
-      route["stops"].append(
-        {
-          "stop_order": stop_order,
-          "binId": bin_id,
-          "lat": round(lat, 6),
-          "lon": round(lon, 6),
-          "collected_kg": round(collected_kg, 3),
-        }
-      )
-      if not route.get("route_path") and route_path:
-        route["route_path"] = route_path
+            route = routes_by_key.setdefault(
+                (route_type, date),
+                {
+                    "route_type": route_type,
+                    "date": date,
+                    "day_index": day_index,
+                    "depot": [round(depot_lat, 6), round(depot_lon, 6)],
+                    "stops": [],
+                    "collected_kg": round(day_collection_kg, 3),
+                    "distance_m": round(day_distance_m, 3),
+                    "co2_kg": round(day_co2_kg, 3),
+                    "route_path": route_path,
+                },
+            )
+            route["stops"].append(
+                {
+                    "stop_order": stop_order,
+                    "binId": bin_id,
+                    "lat": round(lat, 6),
+                    "lon": round(lon, 6),
+                    "collected_kg": round(collected_kg, 3),
+                }
+            )
+            if not route.get("route_path") and route_path:
+                route["route_path"] = route_path
 
-  routes: list[dict[str, object]] = []
-  for route_type, date in sorted(routes_by_key):
-    route = routes_by_key[(route_type, date)]
-    ordered_stops = sorted(route["stops"], key=lambda item: item["stop_order"])
-    coords = route.get("route_path") or [route["depot"]]
-    routes.append(
-      {
-        "date": date,
-        "route_type": route_type,
-        "day_index": route["day_index"],
-        "coords": coords,
-        "stops": ordered_stops,
-        "collected_kg": route["collected_kg"],
-        "distance_m": route["distance_m"],
-        "co2_kg": route["co2_kg"],
-      }
-    )
-  return routes
+    routes: list[dict[str, object]] = []
+    for route_type, date in sorted(routes_by_key):
+        route = routes_by_key[(route_type, date)]
+        ordered_stops = sorted(route["stops"], key=lambda item: item["stop_order"])
+        coords = route.get("route_path") or [route["depot"]]
+        routes.append(
+            {
+                "date": date,
+                "route_type": route_type,
+                "day_index": route["day_index"],
+                "coords": coords,
+                "stops": ordered_stops,
+                "collected_kg": route["collected_kg"],
+                "distance_m": route["distance_m"],
+                "co2_kg": route["co2_kg"],
+            }
+        )
+    return routes
 
 
 def compute_center(
@@ -841,6 +870,7 @@ def build_html(
     function animateRoute(route) {{
       cancelRouteAnimation();
       truckLayer.clearLayers();
+      routeTrailLayer.clearLayers();
 
       const points = routePoints(route);
       if (points.length < 2) {{
@@ -1000,14 +1030,11 @@ def build_html(
         L.polyline(route.coords, {{ color: "#0f172a", weight: 3.5, opacity: 0.9, dashArray: "6 6" }}).addTo(routeLayer);
       }}
 
-      if (route) {{
-        animateRoute(route);
-      }} else {{
-        cancelRouteAnimation();
-        routeTrailLayer.clearLayers();
-        truckLayer.clearLayers();
-        truckMarker = null;
-      }}
+      cancelRouteAnimation();
+      routeTrailLayer.clearLayers();
+      truckLayer.clearLayers();
+      truckMarker = null;
+      playRouteButton.disabled = !route;
 
       const distanceKm = route ? route.distance_m / 1000.0 : 0;
       const co2Kg = route ? route.co2_kg : 0;
@@ -1078,29 +1105,39 @@ def build_html(
 """
 
 
-def main() -> None:
+def required_csv_paths() -> list[Path]:
+    gen_dir = generated_dir()
+    return [
+        gen_dir / "pois.csv",
+        gen_dir / "bins.csv",
+        gen_dir / "street_lines.csv",
+        gen_dir / "waste_events.csv",
+        gen_dir / "truck_routes.csv",
+    ]
+
+
+def load_visualization_data() -> dict[str, object]:
     gen_dir = generated_dir()
     pois_csv = gen_dir / "pois.csv"
     bins_csv = gen_dir / "bins.csv"
     streets_csv = gen_dir / "street_lines.csv"
     waste_events_csv = gen_dir / "waste_events.csv"
-    output_html = gen_dir / "visualization.html"
+    truck_routes_csv = gen_dir / "truck_routes.csv"
 
-    missing = [str(path) for path in (pois_csv, bins_csv, streets_csv, waste_events_csv) if not path.exists()]
+    missing = [str(path) for path in required_csv_paths() if not path.exists()]
     if missing:
-        raise SystemExit(
-            "Missing required CSV files. Run the generators first:\n"
-            + "\n".join(f"- {path}" for path in missing)
+        missing_lines = "\n".join(f"- {path}" for path in missing)
+        raise FileNotFoundError(
+            "Missing required CSV files. Run generators first:\n" + missing_lines
         )
 
+    pois = read_pois(pois_csv)
     bins = read_bins(bins_csv)
     street_lines = read_street_lines(streets_csv)
     waste_events = read_waste_events(waste_events_csv)
-    truck_routes_csv = gen_dir / "truck_routes.csv"
-    if not truck_routes_csv.exists():
-        raise SystemExit(f"Missing required CSV files. Run the generators first:\n- {truck_routes_csv}")
-    pois = read_pois(pois_csv)
     truck_routes = read_truck_routes(truck_routes_csv)
+
+    day_labels = sorted({str(event["date"]) for event in waste_events})
     mode_payload = compute_mode_load_series(waste_events, bins, truck_routes)
     center_lat, center_lon = compute_center(pois, bins, street_lines)
 
@@ -1108,16 +1145,121 @@ def main() -> None:
         pois,
         bins,
         street_lines,
-      sorted({str(event["date"]) for event in waste_events}),
-      mode_payload,
+        day_labels,
+        mode_payload,
         truck_routes,
         center_lat,
         center_lon,
     )
-    output_html.write_text(html, encoding="utf-8")
 
-    print(f"HTML visualization written to: {output_html}")
-    print(f"Loaded {len(pois)} POIs, {len(bins)} bins, {len(street_lines)} street lines, {len(waste_events)} waste events, and {len(truck_routes)} truck routes")
+    return {
+        "html": html,
+        "meta": {
+            "pois": len(pois),
+            "bins": len(bins),
+            "street_lines": len(street_lines),
+            "waste_events": len(waste_events),
+            "truck_routes": len(truck_routes),
+            "days": len(day_labels),
+        },
+        "day_labels": day_labels,
+        "truck_modes": sorted(mode_payload.keys()),
+    }
+
+
+def build_error_html(message: str) -> str:
+    safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>Route Optimizer Server Error</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at top left, #ffffff 0, #eef2f7 40%, #dae3ef 100%);
+      font-family: "Avenir Next", "Helvetica Neue", "Segoe UI", sans-serif;
+      color: #0f172a;
+    }}
+    .card {{
+      width: min(720px, 92vw);
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 16px 32px rgba(15, 23, 42, 0.15);
+      padding: 18px 20px;
+    }}
+    h1 {{ margin: 0 0 10px; font-size: 1.1rem; }}
+    p {{ margin: 0 0 10px; color: #334155; }}
+    pre {{
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 0.88rem;
+    }}
+  </style>
+</head>
+<body>
+  <article class=\"card\">
+    <h1>Visualization data is not ready</h1>
+    <p>Restart the server to regenerate the route data pipeline outputs.</p>
+    <pre>{safe}</pre>
+  </article>
+</body>
+</html>
+"""
+
+
+app = Flask(__name__)
+
+
+@app.get("/")
+def index() -> Response:
+    try:
+        payload = load_visualization_data()
+    except FileNotFoundError as exc:
+        return Response(build_error_html(str(exc)), status=500, mimetype="text/html")
+
+    return Response(str(payload["html"]), mimetype="text/html")
+
+
+@app.get("/api/status")
+def api_status() -> Response:
+    try:
+        payload = load_visualization_data()
+    except FileNotFoundError as exc:
+        return jsonify({"ok": False, "error": str(exc), "project_root": str(project_root())}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "project_root": str(project_root()),
+            "generated_dir": str(generated_dir()),
+            "meta": payload["meta"],
+            "day_labels": payload["day_labels"],
+            "truck_modes": payload["truck_modes"],
+        }
+    )
+
+
+def main() -> None:
+    print("Route optimizer visualization server")
+    print("Running route data pipeline...")
+    try:
+        run_route_pipeline()
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f"Route data pipeline failed: {exc}") from exc
+    print("Open: http://127.0.0.1:5002")
+    print("Press Ctrl+C to stop")
+    app.run(host="127.0.0.1", port=5002, debug=False)
 
 
 if __name__ == "__main__":
