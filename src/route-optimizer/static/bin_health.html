@@ -6,15 +6,25 @@
   <title>Bin Health Dashboard</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background:#f8fafc; color:#0f172a; }
-    header { padding:12px 16px; background:#0f172a; color:#f8fafc; border-bottom:1px solid rgba(148,163,184,0.22); display:flex; gap:16px; align-items:center; position:sticky; top:0; z-index:1000; }
+    body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background:radial-gradient(circle at top, #eff6ff 0%, #f8fafc 40%, #eef2ff 100%); color:#0f172a; min-height:100vh; }
+    header { padding:14px 18px; background:linear-gradient(135deg, rgba(15,23,42,0.98), rgba(30,41,59,0.96)); color:#f8fafc; border-bottom:1px solid rgba(148,163,184,0.22); display:flex; gap:16px; align-items:center; position:sticky; top:0; z-index:1000; box-shadow:0 10px 30px rgba(15,23,42,0.18); backdrop-filter: blur(10px); }
     header h3 { margin:0; font-size:18px; letter-spacing:0.01em; }
     #map { height:60vh; }
-    .panel { padding:12px; }
-    .summary { display:flex; gap:12px; flex-wrap:wrap; }
-    .card { background:#fff; padding:8px 12px; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.06); }
+    .panel { padding:16px; }
+    .summary { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:14px; }
+    .card { position:relative; overflow:hidden; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98)); padding:16px 18px; border-radius:18px; border:1px solid rgba(148,163,184,0.16); box-shadow:0 18px 35px rgba(15,23,42,0.08); }
+    .card::after { content:''; position:absolute; inset:0 auto auto 0; width:100%; height:4px; background:linear-gradient(90deg, #38bdf8, #6366f1); opacity:0.9; }
+    .card--hero { grid-column:span 2; background:linear-gradient(135deg, rgba(14,165,233,0.12), rgba(99,102,241,0.12) 55%, rgba(255,255,255,0.98)); }
+    .card--hero::after { background:linear-gradient(90deg, #0ea5e9, #6366f1); }
+    .card--risk::after { background:linear-gradient(90deg, #f97316, #ef4444); }
+    .card--overflow::after { background:linear-gradient(90deg, #14b8a6, #06b6d4); }
+    .card--eval::after { background:linear-gradient(90deg, #64748b, #94a3b8); }
     table { width:100%; border-collapse:collapse; margin-top:12px; }
-    th,td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; }
+    th,td { padding:10px 12px; border-bottom:1px solid rgba(148,163,184,0.18); text-align:left; }
+    th { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:#64748b; }
+    tbody tr { background:rgba(255,255,255,0.7); }
+    tbody tr:nth-child(2n) { background:rgba(248,250,252,0.92); }
+    tbody tr:hover { background:#fff; }
     .urgent { color:#b91c1c; font-weight:700 }
     .muted { color:#64748b; font-size:12px; }
     .fill-badge { font-variant-numeric: tabular-nums; }
@@ -24,10 +34,17 @@
     .day-pill { background:rgba(148,163,184,0.14); border:1px solid rgba(148,163,184,0.22); color:#e2e8f0; padding:6px 10px; border-radius:999px; font-size:12px; white-space:nowrap; }
     .header-btn { background:#e2e8f0; color:#0f172a; border:0; padding:8px 12px; border-radius:999px; font-weight:600; cursor:pointer; }
     .header-btn:hover { background:#cbd5e1; }
-    .summary .card strong { display:block; margin-bottom:2px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; }
-    .summary .card span { font-size:16px; font-weight:700; }
-    .summary .card .meta { display:block; margin-top:4px; color:#475569; font-size:12px; line-height:1.35; white-space:pre-line; }
-    .summary .card .metric-list { display:block; margin-top:4px; color:#475569; font-size:12px; line-height:1.45; white-space:pre-line; }
+    .summary .card strong { position:relative; z-index:1; display:block; margin-bottom:8px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; }
+    .summary .card span { position:relative; z-index:1; display:block; font-size:clamp(18px, 3vw, 24px); font-weight:800; line-height:1.1; }
+    .summary .card .meta { position:relative; z-index:1; display:block; margin-top:8px; color:#475569; font-size:12px; line-height:1.4; white-space:pre-line; }
+    .summary .card .metric-list { position:relative; z-index:1; display:block; margin-top:8px; color:#475569; font-size:12px; line-height:1.45; white-space:pre-line; }
+    .summary .card .pill { display:inline-flex; align-items:center; gap:6px; margin-top:10px; padding:4px 10px; border-radius:999px; background:rgba(15,23,42,0.05); color:#334155; font-size:11px; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; }
+    .summary .card:hover { transform:translateY(-2px); box-shadow:0 22px 40px rgba(15,23,42,0.12); transition:transform 160ms ease, box-shadow 160ms ease; }
+    .summary .card--hero .meta, .summary .card--hero .metric-list { max-width:42ch; }
+    @media (max-width: 760px) {
+      .card--hero { grid-column:span 1; }
+      #map { height:48vh; }
+    }
   </style>
 </head>
 <body>
@@ -47,12 +64,11 @@
 
   <div class="panel">
     <div class="summary">
-      <div class="card"><strong>Selected day</strong><span id="day-summary">-</span></div>
-      <div class="card"><strong>Top bin</strong><span id="top-bin">-</span></div>
-      <div class="card"><strong>Avg top5</strong><span id="topavg">-</span></div>
-      <div class="card"><strong>Hotspots</strong><span id="hotspots">-</span></div>
-      <div class="card"><strong>Global model</strong><span id="model-summary">-</span><span class="meta" id="model-details">-</span></div>
-      <div class="card"><strong>Evaluation</strong><span id="eval-summary">-</span><span class="metric-list" id="eval-details">-</span></div>
+      <div class="card card--hero"><strong>Selected day</strong><span id="day-summary">-</span></div>
+      <div class="card card--eval"><strong>Average fill</strong><span id="fill-summary">-</span><span class="meta" id="fill-meta">-</span></div>
+      <div class="card card--risk"><strong>At risk</strong><span id="risk-summary">-</span><span class="meta" id="risk-meta">-</span></div>
+      <div class="card card--overflow"><strong>Overflow now</strong><span id="overflow-summary">-</span><span class="meta" id="overflow-meta">-</span></div>
+      <div class="card card--eval"><strong>Evaluation</strong><span id="eval-summary">-</span><span class="metric-list" id="eval-details">-</span></div>
     </div>
 
     <table aria-label="Bin health table">
@@ -93,6 +109,12 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+    }
+
+    function formatNumber(value, digits = 3) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return '-';
+      return numeric.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
     }
 
     function recentWindow(series, window = 7) {
@@ -160,7 +182,8 @@
       const prefix = series.slice(0, Math.min(dayIndex + 1, series.length));
       const selectedDayKg = Number(series[dayIndex] || 0);
       const currentLoad = prefix.reduce((sum, value) => sum + value, 0);
-      const capacity = estimateCapacity(prefix, cityBaseline);
+      const estimatedCapacity = estimateCapacity(prefix, cityBaseline);
+      const capacity = Number(entry.capacity_kg || estimatedCapacity || 0) > 0 ? Number(entry.capacity_kg || estimatedCapacity) : estimatedCapacity;
       const fillRatio = capacity > 0 ? Math.min(1, currentLoad / capacity) : 0;
       const expectedThisDay = forecastNextDay(history.length ? history : prefix);
       const projectedFillRatio = capacity > 0 ? Math.min(1, (currentLoad + selectedDayKg) / capacity) : 0;
@@ -215,6 +238,17 @@
       tbody.innerHTML = '';
       const sortedEntries = [...entries].sort((a,b)=> (b.urgency||0)-(a.urgency||0));
       const selectedDayLabel = dayLabels[selectedDayIndex] || `Day ${selectedDayIndex + 1}`;
+      const totalBins = sortedEntries.length;
+      const avgFillRatio = totalBins ? sortedEntries.reduce((sum, entry) => sum + Number(entry.fill_ratio || 0), 0) / totalBins : 0;
+      const criticalBins = sortedEntries.filter(entry => Number(entry.fill_ratio || 0) >= 0.8).length;
+      const severeBins = sortedEntries.filter(entry => Number(entry.fill_ratio || 0) >= 0.9).length;
+      const overflowNow = sortedEntries.filter(entry => Number(entry.fill_ratio || 0) >= 1).length;
+      const nextOverflow = [...sortedEntries]
+        .filter(entry => {
+          const hours = Number(entry.hours_until_overflow);
+          return Number.isFinite(hours) && hours > 0;
+        })
+        .sort((a, b) => Number(a.hours_until_overflow) - Number(b.hours_until_overflow))[0] || null;
       // attach eval MAE from evalData if available, then render rows
       sortedEntries.forEach(e => {
         if (evalData) {
@@ -229,24 +263,23 @@
         const currentLoadKg = Number(e.current_load_kg ?? 0);
         const expectedThisDayKg = Number(e.expected_this_day_kg ?? e.expected_collected_kg ?? 0);
         const expectedErrorKg = Number(e.expected_error_kg ?? Math.abs(expectedThisDayKg - selectedDayKg));
-        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${e.hours_until_overflow ?? '-'}</td><td>${expectedThisDayKg.toFixed(2)}</td><td>${selectedDayKg.toFixed(2)} <span class="muted">(${escapeHtml(selectedDayLabel)})</span></td><td>${currentLoadKg.toFixed(2)}</td><td>${e.days_since_last_collection ?? '-'}</td><td>${expectedErrorKg.toFixed(2)}</td>`;
+        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${formatNumber(e.hours_until_overflow)}</td><td>${formatNumber(expectedThisDayKg)}</td><td>${formatNumber(selectedDayKg)}</td><td>${formatNumber(currentLoadKg)}</td><td>${e.days_since_last_collection ?? '-'}</td><td>${formatNumber(expectedErrorKg)}</td>`;
         tbody.appendChild(tr);
       });
-      const top = sortedEntries.slice(0,5);
-      document.getElementById('top-bin').textContent = top.length ? `#${top[0].binId}` : '-';
-      document.getElementById('topavg').textContent = top.length ? Math.round(top.reduce((s,x)=> s + (x.urgency||0),0)/top.length) + '%' : '-';
-      document.getElementById('hotspots').textContent = sortedEntries.filter(x=> (x.urgency||0) >= 80).length;
-      // compute average MAE across shown entries and display alongside day summary
-      const maes = sortedEntries.map(x => (x.eval_mae != null ? Number(x.eval_mae) : NaN)).filter(v => !Number.isNaN(v));
-      const avgMae = maes.length ? (maes.reduce((s,v)=> s+v,0)/maes.length) : null;
-      document.getElementById('day-summary').textContent = `${selectedDayLabel} • ${sortedEntries.length} bins${avgMae != null ? ' • Avg MAE: ' + avgMae.toFixed(3) + ' kg' : ''}`;
+      document.getElementById('day-summary').textContent = `${selectedDayLabel} • ${totalBins} bins`;
+      document.getElementById('fill-summary').textContent = `${formatNumber(avgFillRatio * 100, 1)}%`;
+      document.getElementById('fill-meta').textContent = `Mean fill across all bins on this day`;
+      document.getElementById('risk-summary').textContent = `${criticalBins} bins`;
+      document.getElementById('risk-meta').textContent = `${severeBins} at or above 90%`;
+      document.getElementById('overflow-summary').textContent = `${overflowNow} bins`;
+      document.getElementById('overflow-meta').textContent = nextOverflow ? `Next bin in ${formatNumber(nextOverflow.hours_until_overflow, 1)} h` : 'No future overflow estimate';
     }
 
     function setupExport(getSnapshot){
       document.getElementById('export-btn').addEventListener('click', ()=>{
         const snapshot = getSnapshot();
         const rows = [['binId','urgency','fill_ratio','hours_until_overflow','expected_this_day_kg','kg_this_day','current_load_kg','days_since_last_collection','error_kg']];
-        snapshot.forEach(e=> rows.push([e.binId,e.urgency,e.fill_ratio,e.hours_until_overflow,e.expected_this_day_kg ?? e.expected_collected_kg,e.kg_this_day ?? e.selected_day_kg,e.current_load_kg,e.days_since_last_collection,(e.expected_error_kg != null ? Number(e.expected_error_kg).toFixed(3) : '')]));
+        snapshot.forEach(e=> rows.push([e.binId,e.urgency,formatNumber(e.fill_ratio),formatNumber(e.hours_until_overflow),formatNumber(e.expected_this_day_kg ?? e.expected_collected_kg),formatNumber(e.kg_this_day ?? e.selected_day_kg),formatNumber(e.current_load_kg),e.days_since_last_collection,(e.expected_error_kg != null ? formatNumber(e.expected_error_kg) : '')]));
         const csv = rows.map(r=> r.map(c=> `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
         const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
         const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='bin_health.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
@@ -258,17 +291,8 @@
       if(!data) return;
       const { pois, bins, street_lines, bin_health, day_labels, model_info, city_context } = data;
 
-      const modelSummary = document.getElementById('model-summary');
-      const modelDetails = document.getElementById('model-details');
       const evalSummary = document.getElementById('eval-summary');
       const evalDetails = document.getElementById('eval-details');
-      if (model_info) {
-        modelSummary.textContent = model_info.model_name || 'Global linear regression';
-        modelDetails.textContent = `${model_info.training_rows ?? '-'} rows across ${model_info.training_cities ?? '-'} cities\nTarget: ${model_info.target_city || 'Chisinau, Moldova'}`;
-      } else {
-        modelSummary.textContent = 'Global linear regression';
-        modelDetails.textContent = 'Target: Chisinau, Moldova';
-      }
 
       // try to fetch evaluation metrics (per-bin) to show MAE per bin
       try {
@@ -282,11 +306,11 @@
           const pushMetric = (label, value, suffix = '') => {
             const numeric = Number(value);
             if (!Number.isFinite(numeric) || numeric <= 0) return;
-            metricLines.push(`${label} ${numeric.toFixed(3)}${suffix}`);
+            metricLines.push(`${label} ${formatNumber(numeric)}${suffix}`);
           };
           const evalSummaryLine = [
-            `MAE ${Number(ej.evaluation.mae ?? 0).toFixed(3)} kg`,
-            `RMSE ${Number(ej.evaluation.rmse ?? 0).toFixed(3)} kg`,
+            `MAE ${formatNumber(ej.evaluation.mae ?? 0)} kg`,
+            `RMSE ${formatNumber(ej.evaluation.rmse ?? 0)} kg`,
           ].join(' • ');
           pushMetric('Calibration', ej.evaluation.calibration_error, ' kg');
           pushMetric('Overflow P', ej.evaluation.overflow_precision);
@@ -352,8 +376,8 @@
             marker.setStyle({ fillColor: colorForUrgency(urgency) });
             const selectedDayKg = entry ? Number(entry.selected_day_kg || entry.kg_this_day || 0) : 0;
             const currentLoadKg = entry ? Number(entry.current_load_kg || 0) : 0;
-            const trendText = entry && Array.isArray(entry.daily_series) ? entry.daily_series.map(v => Number(v).toFixed(2)).join(' / ') : '-';
-            marker.bindPopup(`<strong>Bin #${b.binId}</strong><br>Urgency: ${urgency}<br>Fill: ${entry ? Math.round((entry.fill_ratio || 0) * 100) : 0}%<br>Kg this day: ${selectedDayKg.toFixed(2)}<br>Current kg: ${currentLoadKg.toFixed(2)}<br>Expected this day: ${entry?.expected_this_day_kg ?? entry?.expected_collected_kg ?? '-'} kg<br><br>Abs error: ${entry?.expected_error_kg != null ? Number(entry.expected_error_kg).toFixed(2) : '-'} kg<br><span class="muted">7d: ${trendText}</span>`);
+            const trendText = entry && Array.isArray(entry.daily_series) ? entry.daily_series.map(v => formatNumber(v)).join(' / ') : '-';
+            marker.bindPopup(`<strong>Bin #${b.binId}</strong><br>Urgency: ${urgency}<br>Fill: ${entry ? Math.round((entry.fill_ratio || 0) * 100) : 0}%<br>Kg this day: ${formatNumber(selectedDayKg)}<br>Current kg: ${formatNumber(currentLoadKg)}<br>Expected this day: ${formatNumber(entry?.expected_this_day_kg ?? entry?.expected_collected_kg)} kg<br><br>Abs error: ${formatNumber(entry?.expected_error_kg)} kg<br><span class="muted">7d: ${trendText}</span>`);
           }
         });
         if(coords.length) map.fitBounds(coords,{padding:[20,20]});
