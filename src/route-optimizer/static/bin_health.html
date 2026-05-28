@@ -26,6 +26,8 @@
     .header-btn:hover { background:#cbd5e1; }
     .summary .card strong { display:block; margin-bottom:2px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; }
     .summary .card span { font-size:16px; font-weight:700; }
+    .summary .card .meta { display:block; margin-top:4px; color:#475569; font-size:12px; line-height:1.35; white-space:pre-line; }
+    .summary .card .metric-list { display:block; margin-top:4px; color:#475569; font-size:12px; line-height:1.45; white-space:pre-line; }
   </style>
 </head>
 <body>
@@ -49,10 +51,12 @@
       <div class="card"><strong>Top bin</strong><span id="top-bin">-</span></div>
       <div class="card"><strong>Avg top5</strong><span id="topavg">-</span></div>
       <div class="card"><strong>Hotspots</strong><span id="hotspots">-</span></div>
+      <div class="card"><strong>Global model</strong><span id="model-summary">-</span><span class="meta" id="model-details">-</span></div>
+      <div class="card"><strong>Evaluation</strong><span id="eval-summary">-</span><span class="metric-list" id="eval-details">-</span></div>
     </div>
 
     <table aria-label="Bin health table">
-      <thead><tr><th>Bin</th><th>Urgency</th><th>Fill</th><th>Hours to overflow</th><th>Expected kg</th><th>Current kg</th><th>Days since</th><th>Error (MAE)</th></tr></thead>
+      <thead><tr><th>Bin</th><th>Urgency</th><th>Fill</th><th>Hours to overflow</th><th>Expected kg</th><th>Kg this day</th><th>Current kg</th><th>Days since</th><th>Error</th></tr></thead>
       <tbody id="bins-tbody"></tbody>
     </table>
     <div class="muted">The slider changes the selected day and updates the map and table from that day’s cumulative load.</div>
@@ -152,12 +156,14 @@
 
     function buildSnapshotEntry(entry, dayIndex, cityBaseline) {
       const series = Array.isArray(entry.daily_series) ? entry.daily_series.map(value => Number(value) || 0) : [];
+      const history = series.slice(0, Math.min(dayIndex, series.length));
       const prefix = series.slice(0, Math.min(dayIndex + 1, series.length));
+      const selectedDayKg = Number(series[dayIndex] || 0);
       const currentLoad = prefix.reduce((sum, value) => sum + value, 0);
       const capacity = estimateCapacity(prefix, cityBaseline);
       const fillRatio = capacity > 0 ? Math.min(1, currentLoad / capacity) : 0;
-      const expectedNext = forecastNextDay(prefix);
-      const projectedFillRatio = capacity > 0 ? Math.min(1, (currentLoad + expectedNext) / capacity) : 0;
+      const expectedThisDay = forecastNextDay(history.length ? history : prefix);
+      const projectedFillRatio = capacity > 0 ? Math.min(1, (currentLoad + selectedDayKg) / capacity) : 0;
       const mean = weightedMean(prefix);
       const std = prefix.length ? Math.sqrt(prefix.reduce((sum, value) => sum + Math.pow((Number(value) || 0) - mean, 2), 0) / prefix.length) : 0;
       const anomaly = std > 1e-9 ? Math.abs((currentLoad - mean) / std) : 0;
@@ -169,9 +175,10 @@
       })() : 999;
       const missedRisk = Math.min(1, daysSince / 7);
       const pressure = Math.max(fillRatio, projectedFillRatio);
-      const momentum = mean > 1e-9 ? Math.max(0, Math.min(2.5, expectedNext / mean)) : 0;
+      const momentum = mean > 1e-9 ? Math.max(0, Math.min(2.5, expectedThisDay / mean)) : 0;
       const urgency = Math.max(0, Math.min(100, Math.round(pressure * 64 + Math.min(5, anomaly) * 8 + missedRisk * 18 + momentum * 4)));
-      const hoursUntilOverflow = expectedNext > 0 ? Math.max(0, ((capacity - currentLoad) / (expectedNext / 24))) : null;
+      const hoursUntilOverflow = expectedThisDay > 0 ? Math.max(0, ((capacity - currentLoad) / (expectedThisDay / 24))) : null;
+      const expectedError = Math.abs(expectedThisDay - selectedDayKg);
 
       return {
         binId: entry.binId,
@@ -179,12 +186,15 @@
         fill_ratio: fillRatio,
         projected_fill_ratio: projectedFillRatio,
         hours_until_overflow: hoursUntilOverflow,
-        expected_collected_kg: expectedNext,
+        expected_collected_kg: expectedThisDay,
+        expected_this_day_kg: expectedThisDay,
+        kg_this_day: selectedDayKg,
         current_load_kg: currentLoad,
         capacity_kg: capacity,
         days_since_last_collection: daysSince,
         daily_series: series,
-        selected_day_kg: currentLoad,
+        selected_day_kg: selectedDayKg,
+        expected_error_kg: expectedError,
         // per-bin evaluation metrics (populated from /api/eval)
         eval_mae: null,
       };
@@ -215,8 +225,11 @@
         const fillRatio = Number(e.fill_ratio || 0);
         const fillPct = Math.round(fillRatio * 100);
         const fillClass = fillPct >= 80 ? 'urgent' : '';
-        const selectedDayKg = Number(e.selected_day_kg ?? e.current_load_kg ?? 0);
-        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${e.hours_until_overflow ?? '-'}</td><td>${(Number(e.expected_collected_kg || 0)).toFixed(2)}</td><td>${selectedDayKg.toFixed(2)} <span class="muted">(${escapeHtml(selectedDayLabel)})</span></td><td>${e.days_since_last_collection ?? '-'}</td><td>${(e.eval_mae != null ? Number(e.eval_mae).toFixed(3) : '-')}</td>`;
+        const selectedDayKg = Number(e.selected_day_kg ?? e.kg_this_day ?? 0);
+        const currentLoadKg = Number(e.current_load_kg ?? 0);
+        const expectedThisDayKg = Number(e.expected_this_day_kg ?? e.expected_collected_kg ?? 0);
+        const expectedErrorKg = Number(e.expected_error_kg ?? Math.abs(expectedThisDayKg - selectedDayKg));
+        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${e.hours_until_overflow ?? '-'}</td><td>${expectedThisDayKg.toFixed(2)}</td><td>${selectedDayKg.toFixed(2)} <span class="muted">(${escapeHtml(selectedDayLabel)})</span></td><td>${currentLoadKg.toFixed(2)}</td><td>${e.days_since_last_collection ?? '-'}</td><td>${expectedErrorKg.toFixed(2)}</td>`;
         tbody.appendChild(tr);
       });
       const top = sortedEntries.slice(0,5);
@@ -232,8 +245,8 @@
     function setupExport(getSnapshot){
       document.getElementById('export-btn').addEventListener('click', ()=>{
         const snapshot = getSnapshot();
-        const rows = [['binId','urgency','fill_ratio','hours_until_overflow','expected_collected_kg','current_load_kg','days_since_last_collection','error_mae']];
-        snapshot.forEach(e=> rows.push([e.binId,e.urgency,e.fill_ratio,e.hours_until_overflow,e.expected_collected_kg,e.current_load_kg,e.days_since_last_collection,(e.eval_mae != null ? Number(e.eval_mae).toFixed(3) : '')]));
+        const rows = [['binId','urgency','fill_ratio','hours_until_overflow','expected_this_day_kg','kg_this_day','current_load_kg','days_since_last_collection','error_kg']];
+        snapshot.forEach(e=> rows.push([e.binId,e.urgency,e.fill_ratio,e.hours_until_overflow,e.expected_this_day_kg ?? e.expected_collected_kg,e.kg_this_day ?? e.selected_day_kg,e.current_load_kg,e.days_since_last_collection,(e.expected_error_kg != null ? Number(e.expected_error_kg).toFixed(3) : '')]));
         const csv = rows.map(r=> r.map(c=> `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
         const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
         const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='bin_health.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
@@ -243,7 +256,19 @@
     async function init(){
       const data = await loadData();
       if(!data) return;
-      const { pois, bins, street_lines, bin_health, day_labels } = data;
+      const { pois, bins, street_lines, bin_health, day_labels, model_info, city_context } = data;
+
+      const modelSummary = document.getElementById('model-summary');
+      const modelDetails = document.getElementById('model-details');
+      const evalSummary = document.getElementById('eval-summary');
+      const evalDetails = document.getElementById('eval-details');
+      if (model_info) {
+        modelSummary.textContent = model_info.model_name || 'Global linear regression';
+        modelDetails.textContent = `${model_info.training_rows ?? '-'} rows across ${model_info.training_cities ?? '-'} cities\nTarget: ${model_info.target_city || 'Chisinau, Moldova'}`;
+      } else {
+        modelSummary.textContent = 'Global linear regression';
+        modelDetails.textContent = 'Target: Chisinau, Moldova';
+      }
 
       // try to fetch evaluation metrics (per-bin) to show MAE per bin
       try {
@@ -252,9 +277,38 @@
         if (ej && ej.ok && ej.evaluation && ej.evaluation.per_bin) {
           evalData = ej.evaluation.per_bin;
         }
+        if (ej && ej.ok && ej.evaluation) {
+          const metricLines = [];
+          const pushMetric = (label, value, suffix = '') => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric) || numeric <= 0) return;
+            metricLines.push(`${label} ${numeric.toFixed(3)}${suffix}`);
+          };
+          const evalSummaryLine = [
+            `MAE ${Number(ej.evaluation.mae ?? 0).toFixed(3)} kg`,
+            `RMSE ${Number(ej.evaluation.rmse ?? 0).toFixed(3)} kg`,
+          ].join(' • ');
+          pushMetric('Calibration', ej.evaluation.calibration_error, ' kg');
+          pushMetric('Overflow P', ej.evaluation.overflow_precision);
+          pushMetric('Overflow R', ej.evaluation.overflow_recall);
+          pushMetric('Overflow F1', ej.evaluation.overflow_f1);
+          evalSummary.textContent = evalSummaryLine;
+          if (metricLines.length) {
+            evalDetails.style.display = '';
+            evalDetails.textContent = metricLines.join('\n');
+          } else {
+            evalDetails.style.display = 'none';
+            evalDetails.textContent = '';
+          }
+        }
       } catch (e) {
         console.warn('Failed to load /api/eval', e);
         evalData = null;
+        if (evalSummary) evalSummary.textContent = 'Unavailable';
+        if (evalDetails) {
+          evalDetails.style.display = 'none';
+          evalDetails.textContent = '';
+        }
       }
 
       const dayLabels = Array.isArray(day_labels) && day_labels.length ? day_labels : Array.from({ length: 7 }, (_, index) => `Day ${index + 1}`);
@@ -296,9 +350,10 @@
           const marker = markers.get(Number(b.binId));
           if (marker) {
             marker.setStyle({ fillColor: colorForUrgency(urgency) });
-            const selectedDayKg = entry ? Number(entry.selected_day_kg || 0) : 0;
+            const selectedDayKg = entry ? Number(entry.selected_day_kg || entry.kg_this_day || 0) : 0;
+            const currentLoadKg = entry ? Number(entry.current_load_kg || 0) : 0;
             const trendText = entry && Array.isArray(entry.daily_series) ? entry.daily_series.map(v => Number(v).toFixed(2)).join(' / ') : '-';
-            marker.bindPopup(`<strong>Bin #${b.binId}</strong><br>Urgency: ${urgency}<br>Fill: ${entry ? Math.round((entry.fill_ratio || 0) * 100) : 0}%<br>Current kg: ${selectedDayKg.toFixed(2)}<br>Expected next day: ${entry?.expected_collected_kg ?? '-'} kg<br><span class="muted">7d: ${trendText}</span>`);
+            marker.bindPopup(`<strong>Bin #${b.binId}</strong><br>Urgency: ${urgency}<br>Fill: ${entry ? Math.round((entry.fill_ratio || 0) * 100) : 0}%<br>Kg this day: ${selectedDayKg.toFixed(2)}<br>Current kg: ${currentLoadKg.toFixed(2)}<br>Expected this day: ${entry?.expected_this_day_kg ?? entry?.expected_collected_kg ?? '-'} kg<br><br>Abs error: ${entry?.expected_error_kg != null ? Number(entry.expected_error_kg).toFixed(2) : '-'} kg<br><span class="muted">7d: ${trendText}</span>`);
           }
         });
         if(coords.length) map.fitBounds(coords,{padding:[20,20]});

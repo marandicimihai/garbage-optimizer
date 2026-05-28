@@ -10,7 +10,8 @@ from io import StringIO
 
 from flask import Flask, Response, jsonify, send_from_directory
 
-from bin_health import compute_bin_health, predict_next_day_weight
+from bin_health import build_city_context, compute_bin_health, predict_next_day_weight
+from global_city_model import training_city_count, training_row_count
 import forecast_evaluation as forecast_evaluation
 
 
@@ -90,11 +91,20 @@ def load_visualization_data() -> dict[str, object]:
     waste_events = read_waste_events(gen / "waste_events.csv")
 
     day_labels = sorted({str(e["date"]) for e in waste_events})
-    bin_health = compute_bin_health(bins, waste_events, day_labels)
+    city_context = build_city_context(bins, waste_events, day_labels, pois=pois, street_lines=street_lines)
+    bin_health = compute_bin_health(bins, waste_events, day_labels, pois=pois, street_lines=street_lines)
+    model_info = {
+        "model_name": "Global linear regression",
+        "target_city": "Chisinau, Moldova",
+        "training_rows": training_row_count(),
+        "training_cities": training_city_count(),
+    }
 
     return {
         "meta": {"pois": len(pois), "bins": len(bins), "street_lines": len(street_lines), "waste_events": len(waste_events), "days": len(day_labels)},
         "day_labels": day_labels,
+        "city_context": city_context,
+        "model_info": model_info,
         "bin_health": bin_health,
         "pois": pois,
         "bins": bins,
@@ -170,6 +180,7 @@ def api_eval() -> Response:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
     bin_health = payload.get("bin_health", {})
+    city_context = payload.get("city_context", {})
     # build maps for daily_series and capacity
     daily_series_map: dict[int, list[float]] = {}
     capacity_map: dict[int, float] = {}
@@ -185,7 +196,7 @@ def api_eval() -> Response:
     summary = forecast_evaluation.rolling_backtest_all_bins(
         daily_series_map,
         capacity_map,
-        predict_next_day_weight,
+        lambda hist: predict_next_day_weight(hist, city_context=city_context),
         window=7,
     )
 
@@ -210,7 +221,7 @@ def api_eval() -> Response:
     # also include an inline per-bin calculation (explicit calls) for debugging
     inline_per_bin = {}
     for bid, series in daily_series_map.items():
-        res = forecast_evaluation.rolling_backtest_for_series(series, capacity_map.get(bid, 0.0), predict_next_day_weight, window=7)
+        res = forecast_evaluation.rolling_backtest_for_series(series, capacity_map.get(bid, 0.0), lambda hist: predict_next_day_weight(hist, city_context=city_context), window=7)
         inline_per_bin[str(bid)] = _normalize(res)
 
     return jsonify({"ok": True, "evaluation": safe_summary, "evaluation_inline": {"per_bin": inline_per_bin}})

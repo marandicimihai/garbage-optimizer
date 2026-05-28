@@ -213,6 +213,7 @@ def rolling_backtest_all_bins(
         "calibration_error": _safe_mean(all_cal),
         "overflow_precision": None if math.isnan(precision) else precision,
         "overflow_recall": None if math.isnan(recall) else recall,
+        "overflow_f1": None if (precision + recall) <= 0 else (2 * precision * recall / (precision + recall)),
         "per_bin": per_bin,
     }
     return summary
