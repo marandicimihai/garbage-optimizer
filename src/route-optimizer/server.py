@@ -10,7 +10,8 @@ from io import StringIO
 
 from flask import Flask, Response, jsonify, send_from_directory
 
-from bin_health import compute_bin_health
+from bin_health import compute_bin_health, predict_next_day_weight
+import forecast_evaluation as forecast_evaluation
 
 
 def project_root() -> Path:
@@ -154,6 +155,65 @@ def api_bin_health_csv() -> Response:
         ])
 
     return Response(sio.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=bin_health.csv"})
+
+
+@app.get("/api/eval")
+def api_eval() -> Response:
+    """Run rolling backtest evaluation over available bins.
+
+    Returns aggregated metrics (MAE/RMSE/MAPE), overflow precision/recall,
+    calibration_error, and per-bin summaries where available.
+    """
+    try:
+        payload = load_visualization_data()
+    except FileNotFoundError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    bin_health = payload.get("bin_health", {})
+    # build maps for daily_series and capacity
+    daily_series_map: dict[int, list[float]] = {}
+    capacity_map: dict[int, float] = {}
+    for bid_str, entry in bin_health.items():
+        try:
+            bid = int(bid_str)
+        except Exception:
+            bid = int(entry.get("binId", 0))
+        daily_series_map[bid] = [float(v) for v in entry.get("daily_series", [])]
+        capacity_map[bid] = float(entry.get("capacity_kg", 0.0))
+
+    # run rolling backtest across bins using the same forecast function
+    summary = forecast_evaluation.rolling_backtest_all_bins(
+        daily_series_map,
+        capacity_map,
+        predict_next_day_weight,
+        window=7,
+    )
+
+    # normalize types to JSON-friendly primitives and replace NaN with null
+    def _normalize(obj):
+        if obj is None:
+            return None
+        if isinstance(obj, (int, float)):
+            try:
+                if isinstance(obj, float) and (obj != obj):
+                    return None
+            except Exception:
+                pass
+            return float(obj)
+        if isinstance(obj, dict):
+            return {str(k): _normalize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_normalize(v) for v in obj]
+        return obj
+
+    safe_summary = _normalize(summary)
+    # also include an inline per-bin calculation (explicit calls) for debugging
+    inline_per_bin = {}
+    for bid, series in daily_series_map.items():
+        res = forecast_evaluation.rolling_backtest_for_series(series, capacity_map.get(bid, 0.0), predict_next_day_weight, window=7)
+        inline_per_bin[str(bid)] = _normalize(res)
+
+    return jsonify({"ok": True, "evaluation": safe_summary, "evaluation_inline": {"per_bin": inline_per_bin}})
 
 
 def main() -> None:

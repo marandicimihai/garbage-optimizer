@@ -52,7 +52,7 @@
     </div>
 
     <table aria-label="Bin health table">
-      <thead><tr><th>Bin</th><th>Urgency</th><th>Fill</th><th>Hours to overflow</th><th>Expected kg</th><th>Current kg</th><th>Days since</th></tr></thead>
+      <thead><tr><th>Bin</th><th>Urgency</th><th>Fill</th><th>Hours to overflow</th><th>Expected kg</th><th>Current kg</th><th>Days since</th><th>Error (MAE)</th></tr></thead>
       <tbody id="bins-tbody"></tbody>
     </table>
     <div class="muted">The slider changes the selected day and updates the map and table from that day’s cumulative load.</div>
@@ -66,6 +66,9 @@
       if(!j.ok) { console.error('api/status error', j); return; }
       return j;
     }
+
+    // evaluation data (per-bin) populated in init()
+    let evalData = null;
 
     function colorForUrgency(u){
       if(u>=90) return '#b91c1c';
@@ -182,6 +185,8 @@
         days_since_last_collection: daysSince,
         daily_series: series,
         selected_day_kg: currentLoad,
+        // per-bin evaluation metrics (populated from /api/eval)
+        eval_mae: null,
       };
     }
 
@@ -200,27 +205,35 @@
       tbody.innerHTML = '';
       const sortedEntries = [...entries].sort((a,b)=> (b.urgency||0)-(a.urgency||0));
       const selectedDayLabel = dayLabels[selectedDayIndex] || `Day ${selectedDayIndex + 1}`;
+      // attach eval MAE from evalData if available, then render rows
       sortedEntries.forEach(e => {
+        if (evalData) {
+          const per = evalData[String(e.binId)] || evalData[e.binId] || null;
+          if (per && typeof per.mae !== 'undefined') e.eval_mae = per.mae;
+        }
         const tr = document.createElement('tr');
         const fillRatio = Number(e.fill_ratio || 0);
         const fillPct = Math.round(fillRatio * 100);
         const fillClass = fillPct >= 80 ? 'urgent' : '';
         const selectedDayKg = Number(e.selected_day_kg ?? e.current_load_kg ?? 0);
-        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${e.hours_until_overflow ?? '-'}</td><td>${(Number(e.expected_collected_kg || 0)).toFixed(2)}</td><td>${selectedDayKg.toFixed(2)} <span class="muted">(${escapeHtml(selectedDayLabel)})</span></td><td>${e.days_since_last_collection ?? '-'}</td>`;
+        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${e.hours_until_overflow ?? '-'}</td><td>${(Number(e.expected_collected_kg || 0)).toFixed(2)}</td><td>${selectedDayKg.toFixed(2)} <span class="muted">(${escapeHtml(selectedDayLabel)})</span></td><td>${e.days_since_last_collection ?? '-'}</td><td>${(e.eval_mae != null ? Number(e.eval_mae).toFixed(3) : '-')}</td>`;
         tbody.appendChild(tr);
       });
       const top = sortedEntries.slice(0,5);
       document.getElementById('top-bin').textContent = top.length ? `#${top[0].binId}` : '-';
       document.getElementById('topavg').textContent = top.length ? Math.round(top.reduce((s,x)=> s + (x.urgency||0),0)/top.length) + '%' : '-';
       document.getElementById('hotspots').textContent = sortedEntries.filter(x=> (x.urgency||0) >= 80).length;
-      document.getElementById('day-summary').textContent = `${selectedDayLabel} • ${sortedEntries.length} bins`;
+      // compute average MAE across shown entries and display alongside day summary
+      const maes = sortedEntries.map(x => (x.eval_mae != null ? Number(x.eval_mae) : NaN)).filter(v => !Number.isNaN(v));
+      const avgMae = maes.length ? (maes.reduce((s,v)=> s+v,0)/maes.length) : null;
+      document.getElementById('day-summary').textContent = `${selectedDayLabel} • ${sortedEntries.length} bins${avgMae != null ? ' • Avg MAE: ' + avgMae.toFixed(3) + ' kg' : ''}`;
     }
 
     function setupExport(getSnapshot){
       document.getElementById('export-btn').addEventListener('click', ()=>{
         const snapshot = getSnapshot();
-        const rows = [['binId','urgency','fill_ratio','hours_until_overflow','expected_collected_kg','current_load_kg','days_since_last_collection']];
-        snapshot.forEach(e=> rows.push([e.binId,e.urgency,e.fill_ratio,e.hours_until_overflow,e.expected_collected_kg,e.current_load_kg,e.days_since_last_collection]));
+        const rows = [['binId','urgency','fill_ratio','hours_until_overflow','expected_collected_kg','current_load_kg','days_since_last_collection','error_mae']];
+        snapshot.forEach(e=> rows.push([e.binId,e.urgency,e.fill_ratio,e.hours_until_overflow,e.expected_collected_kg,e.current_load_kg,e.days_since_last_collection,(e.eval_mae != null ? Number(e.eval_mae).toFixed(3) : '')]));
         const csv = rows.map(r=> r.map(c=> `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
         const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
         const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='bin_health.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
@@ -231,6 +244,18 @@
       const data = await loadData();
       if(!data) return;
       const { pois, bins, street_lines, bin_health, day_labels } = data;
+
+      // try to fetch evaluation metrics (per-bin) to show MAE per bin
+      try {
+        const er = await fetch('/api/eval');
+        const ej = await er.json();
+        if (ej && ej.ok && ej.evaluation && ej.evaluation.per_bin) {
+          evalData = ej.evaluation.per_bin;
+        }
+      } catch (e) {
+        console.warn('Failed to load /api/eval', e);
+        evalData = null;
+      }
 
       const dayLabels = Array.isArray(day_labels) && day_labels.length ? day_labels : Array.from({ length: 7 }, (_, index) => `Day ${index + 1}`);
       const slider = document.getElementById('day-slider');
