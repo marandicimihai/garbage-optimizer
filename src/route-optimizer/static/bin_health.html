@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bin Health Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background:#f8fafc; color:#0f172a; }
+    header { padding:12px 16px; background:#0f172a; color:#f8fafc; border-bottom:1px solid rgba(148,163,184,0.22); display:flex; gap:16px; align-items:center; position:sticky; top:0; z-index:1000; }
+    header h3 { margin:0; font-size:18px; letter-spacing:0.01em; }
+    #map { height:60vh; }
+    .panel { padding:12px; }
+    .summary { display:flex; gap:12px; flex-wrap:wrap; }
+    .card { background:#fff; padding:8px 12px; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.06); }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th,td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; }
+    .urgent { color:#b91c1c; font-weight:700 }
+    .muted { color:#64748b; font-size:12px; }
+    .fill-badge { font-variant-numeric: tabular-nums; }
+    .nav-controls { display:flex; align-items:center; gap:12px; min-width:min(56vw, 760px); flex:1; }
+    .day-control { display:flex; align-items:center; gap:10px; flex:1; }
+    .day-control input[type="range"] { width:100%; accent-color:#38bdf8; }
+    .day-pill { background:rgba(148,163,184,0.14); border:1px solid rgba(148,163,184,0.22); color:#e2e8f0; padding:6px 10px; border-radius:999px; font-size:12px; white-space:nowrap; }
+    .header-btn { background:#e2e8f0; color:#0f172a; border:0; padding:8px 12px; border-radius:999px; font-weight:600; cursor:pointer; }
+    .header-btn:hover { background:#cbd5e1; }
+    .summary .card strong { display:block; margin-bottom:2px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; }
+    .summary .card span { font-size:16px; font-weight:700; }
+  </style>
+</head>
+<body>
+  <header>
+    <h3>Bin Health Dashboard</h3>
+    <div class="nav-controls">
+      <div class="day-control">
+        <div id="day-label" class="day-pill">Day 7</div>
+        <input id="day-slider" type="range" min="0" max="6" step="1" value="6" aria-label="Select day 1 to day 7" />
+        <div id="day-range-label" class="day-pill">Day 7 / 7</div>
+      </div>
+      <button id="export-btn" class="header-btn">Export CSV</button>
+    </div>
+  </header>
+
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="summary">
+      <div class="card"><strong>Selected day</strong><span id="day-summary">-</span></div>
+      <div class="card"><strong>Top bin</strong><span id="top-bin">-</span></div>
+      <div class="card"><strong>Avg top5</strong><span id="topavg">-</span></div>
+      <div class="card"><strong>Hotspots</strong><span id="hotspots">-</span></div>
+    </div>
+
+    <table aria-label="Bin health table">
+      <thead><tr><th>Bin</th><th>Urgency</th><th>Fill</th><th>Hours to overflow</th><th>Expected kg</th><th>Current kg</th><th>Days since</th></tr></thead>
+      <tbody id="bins-tbody"></tbody>
+    </table>
+    <div class="muted">The slider changes the selected day and updates the map and table from that day’s cumulative load.</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    async function loadData(){
+      const r = await fetch('/api/status');
+      const j = await r.json();
+      if(!j.ok) { console.error('api/status error', j); return; }
+      return j;
+    }
+
+    function colorForUrgency(u){
+      if(u>=90) return '#b91c1c';
+      if(u>=70) return '#f97316';
+      if(u>=40) return '#facc15';
+      return '#16a34a';
+    }
+
+    function formatDayLabel(dayLabels, index) {
+      const label = dayLabels[index] || `Day ${index + 1}`;
+      return `Day ${index + 1} / ${dayLabels.length}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function recentWindow(series, window = 7) {
+      if (!Array.isArray(series)) return [];
+      return series.slice(Math.max(0, series.length - window));
+    }
+
+    function weightedMean(values) {
+      if (!values.length) return 0;
+      if (values.length === 1) return Number(values[0]) || 0;
+      const weights = values.map((_, index) => 0.6 + (0.6 * index) / (values.length - 1));
+      const weighted = values.reduce((sum, value, index) => sum + (Number(value) || 0) * weights[index], 0);
+      const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+      return totalWeight > 0 ? weighted / totalWeight : 0;
+    }
+
+    function estimateCapacity(series, cityBaseline) {
+      const recent = series.filter(value => Number(value) > 1e-9).map(value => Number(value) || 0);
+      let typical = 0;
+      let peak = 0;
+      let volatility = 0;
+      if (recent.length) {
+        const sorted = [...recent].sort((a, b) => a - b);
+        typical = sorted[Math.floor(sorted.length / 2)];
+        peak = sorted[Math.max(0, Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9)))];
+        const mean = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+        volatility = Math.sqrt(recent.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / recent.length);
+      } else if (series.length) {
+        typical = series.reduce((sum, value) => sum + (Number(value) || 0), 0) / series.length;
+        peak = typical;
+      }
+
+      let capacity = 6 + typical * 4.5 + peak * 1.8 + volatility * 0.8;
+      if (cityBaseline > 0) {
+        capacity = Math.max(capacity, cityBaseline * 2.8);
+      }
+      return Math.max(6, capacity);
+    }
+
+    function forecastNextDay(series) {
+      const recent = recentWindow(series);
+      if (!recent.length) return 0;
+      const smoothed = weightedMean(recent);
+      if (recent.length < 3 || !recent.some(value => Number(value) > 1e-9)) {
+        return Math.max(0, smoothed);
+      }
+      const n = recent.length;
+      const xs = Array.from({ length: n }, (_, index) => index);
+      const xMean = xs.reduce((sum, value) => sum + value, 0) / n;
+      const yMean = recent.reduce((sum, value) => sum + (Number(value) || 0), 0) / n;
+      let numerator = 0;
+      let denominator = 0;
+      xs.forEach((x, index) => {
+        const y = Number(recent[index]) || 0;
+        numerator += (x - xMean) * (y - yMean);
+        denominator += Math.pow(x - xMean, 2);
+      });
+      const slope = denominator > 0 ? numerator / denominator : 0;
+      return Math.max(0, smoothed + slope * 0.75);
+    }
+
+    function buildSnapshotEntry(entry, dayIndex, cityBaseline) {
+      const series = Array.isArray(entry.daily_series) ? entry.daily_series.map(value => Number(value) || 0) : [];
+      const prefix = series.slice(0, Math.min(dayIndex + 1, series.length));
+      const currentLoad = prefix.reduce((sum, value) => sum + value, 0);
+      const capacity = estimateCapacity(prefix, cityBaseline);
+      const fillRatio = capacity > 0 ? Math.min(1, currentLoad / capacity) : 0;
+      const expectedNext = forecastNextDay(prefix);
+      const projectedFillRatio = capacity > 0 ? Math.min(1, (currentLoad + expectedNext) / capacity) : 0;
+      const mean = weightedMean(prefix);
+      const std = prefix.length ? Math.sqrt(prefix.reduce((sum, value) => sum + Math.pow((Number(value) || 0) - mean, 2), 0) / prefix.length) : 0;
+      const anomaly = std > 1e-9 ? Math.abs((currentLoad - mean) / std) : 0;
+      const daysSince = prefix.length ? (() => {
+        for (let i = prefix.length - 1; i >= 0; i -= 1) {
+          if ((Number(prefix[i]) || 0) > 1e-9) return prefix.length - 1 - i;
+        }
+        return prefix.length;
+      })() : 999;
+      const missedRisk = Math.min(1, daysSince / 7);
+      const pressure = Math.max(fillRatio, projectedFillRatio);
+      const momentum = mean > 1e-9 ? Math.max(0, Math.min(2.5, expectedNext / mean)) : 0;
+      const urgency = Math.max(0, Math.min(100, Math.round(pressure * 64 + Math.min(5, anomaly) * 8 + missedRisk * 18 + momentum * 4)));
+      const hoursUntilOverflow = expectedNext > 0 ? Math.max(0, ((capacity - currentLoad) / (expectedNext / 24))) : null;
+
+      return {
+        binId: entry.binId,
+        urgency,
+        fill_ratio: fillRatio,
+        projected_fill_ratio: projectedFillRatio,
+        hours_until_overflow: hoursUntilOverflow,
+        expected_collected_kg: expectedNext,
+        current_load_kg: currentLoad,
+        capacity_kg: capacity,
+        days_since_last_collection: daysSince,
+        daily_series: series,
+        selected_day_kg: currentLoad,
+      };
+    }
+
+    function buildSnapshot(binHealth, dayIndex) {
+      const entries = Object.values(binHealth || {});
+      const cityTotals = entries.length ? entries.map(entry => {
+        const series = Array.isArray(entry.daily_series) ? entry.daily_series.map(value => Number(value) || 0) : [];
+        return series.slice(0, dayIndex + 1).reduce((sum, value) => sum + value, 0);
+      }) : [];
+      const cityBaseline = cityTotals.length ? cityTotals.reduce((sum, value) => sum + value, 0) / Math.max(1, entries.length) : 0;
+      return entries.map(entry => buildSnapshotEntry(entry, dayIndex, cityBaseline));
+    }
+
+    function renderTable(entries, selectedDayIndex, dayLabels){
+      const tbody = document.getElementById('bins-tbody');
+      tbody.innerHTML = '';
+      const sortedEntries = [...entries].sort((a,b)=> (b.urgency||0)-(a.urgency||0));
+      const selectedDayLabel = dayLabels[selectedDayIndex] || `Day ${selectedDayIndex + 1}`;
+      sortedEntries.forEach(e => {
+        const tr = document.createElement('tr');
+        const fillRatio = Number(e.fill_ratio || 0);
+        const fillPct = Math.round(fillRatio * 100);
+        const fillClass = fillPct >= 80 ? 'urgent' : '';
+        const selectedDayKg = Number(e.selected_day_kg ?? e.current_load_kg ?? 0);
+        tr.innerHTML = `<th>#${escapeHtml(e.binId)}</th><td class="urgent" style="color:${colorForUrgency(e.urgency||0)}">${e.urgency ?? '-'}</td><td class="fill-badge ${fillClass}">${fillPct}%</td><td>${e.hours_until_overflow ?? '-'}</td><td>${(Number(e.expected_collected_kg || 0)).toFixed(2)}</td><td>${selectedDayKg.toFixed(2)} <span class="muted">(${escapeHtml(selectedDayLabel)})</span></td><td>${e.days_since_last_collection ?? '-'}</td>`;
+        tbody.appendChild(tr);
+      });
+      const top = sortedEntries.slice(0,5);
+      document.getElementById('top-bin').textContent = top.length ? `#${top[0].binId}` : '-';
+      document.getElementById('topavg').textContent = top.length ? Math.round(top.reduce((s,x)=> s + (x.urgency||0),0)/top.length) + '%' : '-';
+      document.getElementById('hotspots').textContent = sortedEntries.filter(x=> (x.urgency||0) >= 80).length;
+      document.getElementById('day-summary').textContent = `${selectedDayLabel} • ${sortedEntries.length} bins`;
+    }
+
+    function setupExport(getSnapshot){
+      document.getElementById('export-btn').addEventListener('click', ()=>{
+        const snapshot = getSnapshot();
+        const rows = [['binId','urgency','fill_ratio','hours_until_overflow','expected_collected_kg','current_load_kg','days_since_last_collection']];
+        snapshot.forEach(e=> rows.push([e.binId,e.urgency,e.fill_ratio,e.hours_until_overflow,e.expected_collected_kg,e.current_load_kg,e.days_since_last_collection]));
+        const csv = rows.map(r=> r.map(c=> `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+        const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+        const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='bin_health.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      });
+    }
+
+    async function init(){
+      const data = await loadData();
+      if(!data) return;
+      const { pois, bins, street_lines, bin_health, day_labels } = data;
+
+      const dayLabels = Array.isArray(day_labels) && day_labels.length ? day_labels : Array.from({ length: 7 }, (_, index) => `Day ${index + 1}`);
+      const slider = document.getElementById('day-slider');
+      const dayLabel = document.getElementById('day-label');
+      const dayRangeLabel = document.getElementById('day-range-label');
+
+      slider.max = String(Math.max(0, dayLabels.length - 1));
+      slider.value = String(Math.max(0, dayLabels.length - 1));
+
+      const map = L.map('map').setView([0,0], 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+
+      const markers = new Map();
+      bins.forEach(b=>{
+        const marker = L.circleMarker([b.lat,b.lon],{radius:8,fillColor:'#16a34a',color:'#ffffff',weight:1,fillOpacity:0.9}).addTo(map);
+        markers.set(Number(b.binId), marker);
+      });
+
+      const state = { selectedDayIndex: Math.max(0, dayLabels.length - 1) };
+
+      function getSnapshot() {
+        return buildSnapshot(bin_health || {}, state.selectedDayIndex);
+      }
+
+      function updateMapAndTable() {
+        const snapshot = getSnapshot();
+        const dayLabelText = dayLabels[state.selectedDayIndex] || `Day ${state.selectedDayIndex + 1}`;
+        dayLabel.textContent = `Day ${state.selectedDayIndex + 1}`;
+        dayRangeLabel.textContent = `${dayLabelText} / ${dayLabels.length}`;
+        renderTable(snapshot, state.selectedDayIndex, dayLabels);
+
+        const snapshotById = new Map(snapshot.map(entry => [Number(entry.binId), entry]));
+        const coords = [];
+        bins.forEach(b=>{
+          coords.push([b.lat,b.lon]);
+          const entry = snapshotById.get(Number(b.binId));
+          const urgency = entry ? (entry.urgency || 0) : 0;
+          const marker = markers.get(Number(b.binId));
+          if (marker) {
+            marker.setStyle({ fillColor: colorForUrgency(urgency) });
+            const selectedDayKg = entry ? Number(entry.selected_day_kg || 0) : 0;
+            const trendText = entry && Array.isArray(entry.daily_series) ? entry.daily_series.map(v => Number(v).toFixed(2)).join(' / ') : '-';
+            marker.bindPopup(`<strong>Bin #${b.binId}</strong><br>Urgency: ${urgency}<br>Fill: ${entry ? Math.round((entry.fill_ratio || 0) * 100) : 0}%<br>Current kg: ${selectedDayKg.toFixed(2)}<br>Expected next day: ${entry?.expected_collected_kg ?? '-'} kg<br><span class="muted">7d: ${trendText}</span>`);
+          }
+        });
+        if(coords.length) map.fitBounds(coords,{padding:[20,20]});
+      }
+
+      setupExport(getSnapshot);
+      updateMapAndTable();
+
+      slider.addEventListener('input', () => {
+        state.selectedDayIndex = Number(slider.value) || 0;
+        updateMapAndTable();
+      });
+    }
+
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>

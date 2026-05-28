@@ -22,7 +22,6 @@ def main() -> None:
         root / "src" / "route-optimizer" / "streets.py",
         root / "src" / "route-optimizer" / "bins.py",
         root / "src" / "route-optimizer" / "waste_data.py",
-        root / "src" / "route-optimizer" / "trucks.py",
     ]
     server_script = root / "src" / "route-optimizer" / "server.py"
 

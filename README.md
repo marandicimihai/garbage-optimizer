@@ -6,7 +6,7 @@ Project Overview
 Garbage Optimizer is a small smart waste management system in two main phases:
 
 - Phase 1 — Bin live detection (camera + controlled compartments): a ResNet50-based classifier detects the waste type from a webcam feed and the system opens only the compartment corresponding to the detected material, preventing incorrect disposal.
-- Phase 2 — Route optimization (data-driven): scripts generate simulated disposal events and compute truck routes using real outputs from the project (detected disposal events, bin usage, fill progression). The optimizer produces visualizations and route CSVs.
+- Phase 2 — Bin health & prioritization (data-driven): scripts generate simulated disposal events and compute per-bin health predictions (urgency, overflow risk, expected collected weight). The visualization surfaces per-bin urgency so operators can prioritize pickups without requiring a full route optimizer.
 
 See the `src/garbage-classifier` and `src/route-optimizer` folders for implementation.
 
@@ -63,10 +63,9 @@ This runs the following scripts in order (they write outputs into `src/route-opt
 - `pois.py` — loads or synthesizes points of interest (POIs)
 - `streets.py` — prepares street line data
 - `bins.py` — places candidate bins along street lines
-- `waste_data.py` — synthesizes waste events using POIs and bins
-- `trucks.py` — computes truck routes and writes `truck_routes.csv`
+- `waste_data.py` — synthesizes waste events using POIs, clustered ambient background waste, and random spill events across bins
 
-Then it starts `server.py` and opens `http://127.0.0.1:5002` in your browser.
+Then it starts `server.py` and opens `http://127.0.0.1:5002` in your browser. The server computes per-bin health predictions (urgency, overflow estimates) and exposes them via the API.
 
 You can also run only the server (if CSV files are already generated):
 
@@ -79,7 +78,7 @@ Files produced
 
 - `src/route-optimizer/generated/waste_events.csv` — simulated disposal events
 - `src/route-optimizer/generated/bins.csv` — computed bin locations
-- `src/route-optimizer/generated/truck_routes.csv` — computed truck routes
+- Per-bin `bin_health` predictions are available from the server API (`/api/status`) and surfaced in the map UI.
 
 Library versions (recommended)
 -----------------------------
@@ -119,6 +118,6 @@ Project structure (relevant files)
 - `src/garbage-classifier/app.py` — Flask server for the physical prototype (camera feed, `/classify`, `/send_to_bin` endpoints)
 - `src/garbage-classifier/live_webcam.py` — local webcam demo for classifier
 - `models/best_resnet50.pth` — trained classifier checkpoint used by the demos
-- `src/route-optimizer/*.py` — scripts producing POIs, street lines, bins, waste events, truck routes, and visualization
-- `src/route-optimizer/server.py` — Flask server for route visualization and optimization views
+- `src/route-optimizer/*.py` — scripts producing POIs, street lines, bins, waste events, and visualization (including per-bin health predictions)
+- `src/route-optimizer/server.py` — Flask server for visualization and per-bin health predictions
 - `src/route-optimizer/generated/` — generated CSVs used by the visualization server
