@@ -79,6 +79,9 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Local dataset images
+data/dataset-resized/
+
 # IPython
 profile_default/
 ipython_config.py

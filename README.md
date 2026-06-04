@@ -18,8 +18,36 @@ The project enforces correct recycling by combining a camera-based classifier wi
 Data Sources
 ------------
 
-- Image dataset used for training the classifier: Garbage Classification v2 (Kaggle) — https://www.kaggle.com/datasets/sumn2u/garbage-classification-v2 (see `data/data.md`).
+- Image data source: Garbage Classification v2 (Kaggle) — https://www.kaggle.com/datasets/sumn2u/garbage-classification-v2 (see `data/data.md`).
 - The route optimizer uses synthetic/derived data produced by the project's scripts in `src/route-optimizer/generated/` (POIs, street lines, generated bins, and waste_events.csv). Run `python src/route-optimizer/setup.py` to generate these files.
+
+Dataset used for training
+-------------------------
+
+The classifier is trained on a cleaned 4-class dataset stored in `data/dataset/archive/merged_4class_256/`.
+
+Source folders used to build it:
+
+- `data/dataset/archive/standardized_256/` for the original archive classes already resized to 256x256.
+- `data/dataset-resized/` for the newer resized images.
+
+Merge rules:
+
+- Keep only `glass`, `metal`, `paper`, and `plastic`.
+- Map `cardboard` into `paper`.
+- Drop `battery`, `biological`, `clothes`, `shoes`, and `trash`.
+- Resize everything to 256x256 before training.
+
+Final training set statistics:
+
+| Class | Images | Size |
+| --- | ---: | --- |
+| glass | 2237 | 256x256 |
+| metal | 1340 | 256x256 |
+| paper | 3744 | 256x256 |
+| plastic | 2079 | 256x256 |
+
+The notebooks in `notebooks/` point to this merged dataset.
 
 How to run
 ----------
