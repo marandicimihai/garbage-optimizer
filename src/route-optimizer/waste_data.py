@@ -10,6 +10,10 @@ from pathlib import Path
 
 DEFAULT_OUTPUT = "waste_events.csv"
 DEFAULT_SEED = 42
+# global randomness factor: 1.0 = unchanged, <1 reduces noise, >1 amplifies
+# global randomness factor: 1.0 = unchanged, <1 reduces noise, >1 amplifies
+# Edit this value here to change generation noise (hardcoded by design).
+GLOBAL_RANDOMNESS_FACTOR = 10.0
 DAY_COUNT = 7
 DAY_START = datetime(2026, 5, 3, tzinfo=timezone.utc)
 BACKGROUND_ACTIVITY_RATIO = 0.72
@@ -152,9 +156,21 @@ def spatial_bounds(pois: list[Poi], bins: list[Bin]) -> tuple[float, float, floa
 
 def sample_spatial_point(rng: random.Random, bounds: tuple[float, float, float, float]) -> tuple[float, float]:
 	min_lat, max_lat, min_lon, max_lon = bounds
-	lat = rng.uniform(min_lat, max_lat)
-	lon = rng.uniform(min_lon, max_lon)
+	lat = _scaled_uniform(rng, min_lat, max_lat)
+	lon = _scaled_uniform(rng, min_lon, max_lon)
 	return lat, lon
+
+
+def _scaled_uniform(rng: random.Random, low: float, high: float) -> float:
+	"""Uniform sample around the midpoint scaled by GLOBAL_RANDOMNESS_FACTOR.
+
+	If GLOBAL_RANDOMNESS_FACTOR == 1.0 this is equivalent to rng.uniform(low, high).
+	Values <1.0 shrink the range towards the midpoint; >1.0 expand it.
+	"""
+	mid = 0.5 * (low + high)
+	half = 0.5 * (high - low)
+	f = GLOBAL_RANDOMNESS_FACTOR
+	return rng.uniform(mid - half * f, mid + half * f)
 
 
 def time_window_for_poi(poi_type: str) -> tuple[int, ...]:
@@ -189,7 +205,7 @@ def normalize(values: list[float]) -> list[float]:
 
 def type_mixture(poi_type: str, rng: random.Random) -> list[float]:
 	base = POI_WASTE_MIX.get(poi_type, POI_WASTE_MIX["other"])
-	noisy = [weight * rng.uniform(0.8, 1.2) for weight in base]
+	noisy = [weight * _scaled_uniform(rng, 0.8, 1.2) for weight in base]
 	return normalize(noisy)
 
 
@@ -202,7 +218,7 @@ def daily_amount(poi_type: str, rng: random.Random) -> float:
 def background_daily_amount(day_start: datetime, rng: random.Random) -> float:
 	base_amount = rng.gammavariate(3.8, 0.42)
 	weekday_multiplier = 0.92 if day_start.weekday() < 5 else 1.18
-	drift = rng.uniform(0.9, 1.22)
+	drift = _scaled_uniform(rng, 0.9, 1.22)
 	return round(base_amount * BACKGROUND_ACTIVITY_RATIO * weekday_multiplier * drift, 3)
 
 
@@ -225,14 +241,14 @@ def bell_curve_shares(poi: Poi, bins: list[Bin], rng: random.Random) -> list[tup
 	weights = []
 	for _, distance in nearby:
 		bell = math.exp(-(distance ** 2) / (2.0 * sigma ** 2))
-		weights.append(bell * rng.uniform(0.88, 1.12))
+		weights.append(bell * _scaled_uniform(rng, 0.88, 1.12))
 
 	shares = normalize(weights)
 	return [(bin_item, share) for (bin_item, _), share in zip(nearby, shares)]
 
 
 def event_count_for_budget(budget: float, rng: random.Random) -> int:
-	count = int(round(max(1.0, budget * rng.uniform(2.0, 3.5))))
+	count = int(round(max(1.0, budget * _scaled_uniform(rng, 2.0, 3.5))))
 	return max(1, count)
 
 
@@ -270,7 +286,7 @@ def background_bin_shares(center: Poi, bins: list[Bin], rng: random.Random) -> l
 	weights = []
 	for _, distance in nearby:
 		core = math.exp(-(distance ** 2) / (2.0 * max(120.0, (distance + 100.0) / 1.8) ** 2))
-		weights.append(core * rng.uniform(0.75, 1.3))
+		weights.append(core * _scaled_uniform(rng, 0.75, 1.3))
 	shares = normalize(weights)
 	return [(bin_item, share) for (bin_item, _), share in zip(nearby, shares)]
 
@@ -281,7 +297,7 @@ def background_type_mix(day_start: datetime, rng: random.Random) -> list[float]:
 		base = [base[0] * 1.06, base[1] * 0.88, base[2] * 0.92, base[3] * 1.16]
 	else:
 		base = [base[0] * 0.97, base[1] * 1.05, base[2] * 1.0, base[3] * 1.0]
-	noisy = [weight * rng.uniform(0.82, 1.22) for weight in base]
+	noisy = [weight * _scaled_uniform(rng, 0.82, 1.22) for weight in base]
 	return normalize(noisy)
 
 
@@ -292,7 +308,7 @@ def generate_background_events(pois: list[Poi], bins: list[Bin], day_start: date
 	bounds = spatial_bounds(pois, bins)
 	ambient_total = background_daily_amount(day_start, rng)
 	cluster_count = rng.randint(BACKGROUND_CLUSTER_MIN, BACKGROUND_CLUSTER_MAX)
-	cluster_budget = ambient_total * rng.uniform(0.58, 0.74)
+	cluster_budget = ambient_total * _scaled_uniform(rng, 0.58, 0.74)
 	spill_budget = max(0.0, ambient_total - cluster_budget)
 	cluster_weights = split_budget(cluster_budget, cluster_count, rng)
 	background_hours = time_window_for_background(day_start)
@@ -347,7 +363,7 @@ def generate_events(pois: list[Poi], bins: list[Bin], seed: int = DEFAULT_SEED) 
 	for day_offset in range(DAY_COUNT):
 		day_start = DAY_START + timedelta(days=day_offset)
 		for poi in pois:
-			total_daily = daily_amount(poi.type, rng) * rng.uniform(0.88, 1.16)
+			total_daily = daily_amount(poi.type, rng) * _scaled_uniform(rng, 0.88, 1.16)
 			type_ratios = type_mixture(poi.type, rng)
 			bin_shares = bell_curve_shares(poi, bins, rng)
 			preferred_hours = time_window_for_poi(poi.type)

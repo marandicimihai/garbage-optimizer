@@ -34,6 +34,8 @@
     .day-pill { background:rgba(148,163,184,0.14); border:1px solid rgba(148,163,184,0.22); color:#e2e8f0; padding:6px 10px; border-radius:999px; font-size:12px; white-space:nowrap; }
     .header-btn { background:#e2e8f0; color:#0f172a; border:0; padding:8px 12px; border-radius:999px; font-weight:600; cursor:pointer; }
     .header-btn:hover { background:#cbd5e1; }
+    .header-btn--accent { background:linear-gradient(135deg, #38bdf8, #6366f1); color:#f8fafc; }
+    .header-btn--accent:hover { filter:brightness(1.03); }
     .summary .card strong { position:relative; z-index:1; display:block; margin-bottom:8px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; }
     .summary .card span { position:relative; z-index:1; display:block; font-size:clamp(18px, 3vw, 24px); font-weight:800; line-height:1.1; }
     .summary .card .meta { position:relative; z-index:1; display:block; margin-top:8px; color:#475569; font-size:12px; line-height:1.4; white-space:pre-line; }
@@ -52,11 +54,12 @@
     <h3>Bin Health Dashboard</h3>
     <div class="nav-controls">
       <div class="day-control">
-        <div id="day-label" class="day-pill">Day 7</div>
-        <input id="day-slider" type="range" min="0" max="6" step="1" value="6" aria-label="Select day 1 to day 7" />
-        <div id="day-range-label" class="day-pill">Day 7 / 7</div>
+        <div id="day-label" class="day-pill">Day 1</div>
+        <input id="day-slider" type="range" min="0" max="6" step="1" value="0" aria-label="Select day 1 to day 7" />
+        <div id="day-range-label" class="day-pill">Day 1 / 7</div>
       </div>
       <button id="export-btn" class="header-btn">Export CSV</button>
+        <button id="randomize-btn" class="header-btn header-btn--accent">Randomize data</button>
     </div>
   </header>
 
@@ -293,6 +296,7 @@
 
       const evalSummary = document.getElementById('eval-summary');
       const evalDetails = document.getElementById('eval-details');
+      const randomizeBtn = document.getElementById('randomize-btn');
 
       // try to fetch evaluation metrics (per-bin) to show MAE per bin
       try {
@@ -310,12 +314,9 @@
           };
           const evalSummaryLine = [
             `MAE ${formatNumber(ej.evaluation.mae ?? 0)} kg`,
-            `RMSE ${formatNumber(ej.evaluation.rmse ?? 0)} kg`,
           ].join(' • ');
-          pushMetric('Calibration', ej.evaluation.calibration_error, ' kg');
           pushMetric('Overflow P', ej.evaluation.overflow_precision);
           pushMetric('Overflow R', ej.evaluation.overflow_recall);
-          pushMetric('Overflow F1', ej.evaluation.overflow_f1);
           evalSummary.textContent = evalSummaryLine;
           if (metricLines.length) {
             evalDetails.style.display = '';
@@ -341,7 +342,7 @@
       const dayRangeLabel = document.getElementById('day-range-label');
 
       slider.max = String(Math.max(0, dayLabels.length - 1));
-      slider.value = String(Math.max(0, dayLabels.length - 1));
+      slider.value = String(0);
 
       const map = L.map('map').setView([0,0], 13);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
@@ -352,7 +353,7 @@
         markers.set(Number(b.binId), marker);
       });
 
-      const state = { selectedDayIndex: Math.max(0, dayLabels.length - 1) };
+      const state = { selectedDayIndex: 0 };
 
       function getSnapshot() {
         return buildSnapshot(bin_health || {}, state.selectedDayIndex);

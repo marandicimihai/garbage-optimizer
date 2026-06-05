@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Iterable
 
 import numpy as np
+from sklearn.linear_model import LinearRegression
 
 
 @dataclass(frozen=True)
@@ -137,14 +138,15 @@ def _fit_linear_regression(rows: list[dict[str, float]]) -> LinearRegressionMode
     x_rows = []
     y_rows = []
     for row in rows:
-        x_rows.append([1.0] + [float(row[name]) for name in FEATURE_NAMES])
+        x_rows.append([float(row[name]) for name in FEATURE_NAMES])
         y_rows.append(float(row["expected_collected_kg"]))
 
-    design = np.asarray(x_rows, dtype=float)
-    target = np.asarray(y_rows, dtype=float)
-    coefficients, *_ = np.linalg.lstsq(design, target, rcond=None)
-    intercept = float(coefficients[0])
-    weights = np.asarray(coefficients[1:], dtype=float)
+    X = np.asarray(x_rows, dtype=float)
+    y = np.asarray(y_rows, dtype=float)
+    lr = LinearRegression()
+    lr.fit(X, y)
+    intercept = float(lr.intercept_)
+    weights = np.asarray(lr.coef_, dtype=float)
     return LinearRegressionModel(feature_names=FEATURE_NAMES, intercept=intercept, coefficients=weights)
 
 

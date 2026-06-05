@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Evaluation Dashboard</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; }
+      .metrics { display:flex; gap:16px; flex-wrap:wrap; }
+      .metric { padding:12px; border:1px solid #ddd; border-radius:6px; min-width:140px }
+      table { border-collapse: collapse; width:100%; margin-top:16px }
+      th, td { border:1px solid #eee; padding:6px 8px; text-align:left }
+      th { background:#fafafa }
+      #loading { color:#666 }
+    </style>
+  </head>
+  <body>
+    <h1>Forecast Evaluation</h1>
+    <p id="loading">Loading evaluation...</p>
+
+    <div id="summary" style="display:none">
+      <div class="metrics" id="metrics"></div>
+      <h2>Per-bin examples</h2>
+      <table id="perbin">
+        <thead><tr><th>binId</th><th>predictions</th><th>mae</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <script>
+      async function loadEval(){
+        try{
+          const r = await fetch('/api/eval');
+          const j = await r.json();
+          if(!j.ok){ document.getElementById('loading').textContent = 'Evaluation API error'; return }
+          const ev = j.evaluation || {};
+          document.getElementById('loading').style.display='none';
+          document.getElementById('summary').style.display='block';
+
+          const metrics = [
+            ['MAE', ev.mae],
+            ['Overflow precision', ev.overflow_precision],
+            ['Overflow recall', ev.overflow_recall],
+          ];
+          const mroot = document.getElementById('metrics');
+          metrics.forEach(([k,v])=>{
+            const d = document.createElement('div'); d.className='metric';
+            d.innerHTML = `<strong>${k}</strong><div>${v===null? '—' : Number(v).toFixed(4)}</div>`;
+            mroot.appendChild(d);
+          });
+
+          // per-bin table: show sorted by mae desc, limit to 200 rows
+          const per = ev.per_bin || {};
+          const rows = Object.keys(per).map(bid=>({bid:bid, stats:per[bid]}));
+          rows.sort((a,b)=>{ const A = a.stats.mae||0; const B = b.stats.mae||0; return B-A });
+          const tb = document.querySelector('#perbin tbody');
+          rows.slice(0,200).forEach(r=>{
+            const tr = document.createElement('tr');
+            const preds = (r.stats && r.stats.errors) ? r.stats.errors.length : (r.stats ? 1 : 0);
+            tr.innerHTML = `<td>${r.bid}</td><td>${preds}</td><td>${r.stats.mae==null? '—': Number(r.stats.mae).toFixed(4)}</td>`;
+            tb.appendChild(tr);
+          });
+
+        }catch(e){
+          document.getElementById('loading').textContent = 'Failed to load evaluation: '+e.message
+        }
+      }
+      loadEval();
+    </script>
+  </body>
+</html>

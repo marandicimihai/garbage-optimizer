@@ -3,7 +3,7 @@ from __future__ import annotations
 """Forecast evaluation utilities for bin health predictions.
 
 Provides:
-- MAE, RMSE, MAPE
+- MAE
 - Overflow precision / recall / f1 (point forecasts)
 - Calibration summary (binned calibration error)
 - Rolling backtest harness that runs predictions in a historical, causal way
@@ -16,28 +16,22 @@ Usage: run this file as a script for a small smoke test.
 from typing import List, Tuple, Dict
 import math
 import numpy as np
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import confusion_matrix
 
 
 def mae(y_true: List[float], y_pred: List[float]) -> float:
     y_t = np.asarray(y_true, dtype=float)
     y_p = np.asarray(y_pred, dtype=float)
-    return float(np.mean(np.abs(y_t - y_p))) if y_t.size else float('nan')
-
-
-def rmse(y_true: List[float], y_pred: List[float]) -> float:
-    y_t = np.asarray(y_true, dtype=float)
-    y_p = np.asarray(y_pred, dtype=float)
-    return float(np.sqrt(np.mean((y_t - y_p) ** 2))) if y_t.size else float('nan')
-
-
-def mape(y_true: List[float], y_pred: List[float]) -> float:
-    y_t = np.asarray(y_true, dtype=float)
-    y_p = np.asarray(y_pred, dtype=float)
-    # avoid division by zero: ignore points where true == 0
-    mask = np.abs(y_t) > 1e-9
-    if not mask.any():
+    if y_t.size == 0:
         return float('nan')
-    return float(np.mean(np.abs((y_t[mask] - y_p[mask]) / y_t[mask])))
+    return float(mean_absolute_error(y_t, y_p))
+
+
+
+
+
+# MAPE removed: project uses MAE only
 
 
 def overflow_metrics(
@@ -61,47 +55,25 @@ def overflow_metrics(
     pred_over = (cur + yp) >= (threshold * cap)
     true_over = (cur + yt) >= (threshold * cap)
 
-    tp = float(np.logical_and(pred_over, true_over).sum())
-    fp = float(np.logical_and(pred_over, np.logical_not(true_over)).sum())
-    fn = float(np.logical_and(np.logical_not(pred_over), true_over).sum())
+    # use confusion_matrix to extract tp/fp/fn when possible
+    try:
+        y_true_bin = (true_over.astype(int)).tolist()
+        y_pred_bin = (pred_over.astype(int)).tolist()
+        cm = confusion_matrix(y_true_bin, y_pred_bin, labels=[0, 1])
+        tn, fp = int(cm[0, 0]), int(cm[0, 1])
+        fn, tp = int(cm[1, 0]), int(cm[1, 1])
+    except Exception:
+        tp = float(np.logical_and(pred_over, true_over).sum())
+        fp = float(np.logical_and(pred_over, np.logical_not(true_over)).sum())
+        fn = float(np.logical_and(np.logical_not(pred_over), true_over).sum())
 
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
-    return {"precision": precision, "recall": recall, "f1": f1, "tp": tp, "fp": fp, "fn": fn}
+    return {"precision": precision, "recall": recall, "tp": float(tp), "fp": float(fp), "fn": float(fn)}
 
 
-def calibration_error(y_true: List[float], y_pred: List[float], n_bins: int = 10) -> float:
-    """Simple calibration: group predictions into `n_bins` buckets and compare
-    average predicted vs average actual per bucket. Returns RMSE between the
-    mean predicted and mean observed across bins (lower is better).
-    """
-    y_t = np.asarray(y_true, dtype=float)
-    y_p = np.asarray(y_pred, dtype=float)
-    if y_p.size == 0:
-        return float('nan')
-    # compute quantile bins on predictions
-    percentiles = np.linspace(0.0, 100.0, n_bins + 1)
-    bins = np.percentile(y_p, percentiles)
-    # to avoid zero-width bins, add tiny jitter
-    bins = np.unique(bins)
-    if bins.size <= 1:
-        return float('nan')
-
-    # digitize
-    inds = np.digitize(y_p, bins, right=False)
-    mean_preds = []
-    mean_trues = []
-    for b in range(1, bins.size + 1):
-        mask = inds == b
-        if not mask.any():
-            continue
-        mean_preds.append(float(np.mean(y_p[mask])))
-        mean_trues.append(float(np.mean(y_t[mask])))
-    if not mean_preds:
-        return float('nan')
-    return float(np.sqrt(np.mean((np.asarray(mean_preds) - np.asarray(mean_trues)) ** 2)))
+# calibration_error removed per user request
 
 
 def rolling_backtest_for_series(
@@ -116,7 +88,7 @@ def rolling_backtest_for_series(
       - use series[:t+1] (most recent `window` inside `forecast_fn`) to predict day t+1
       - collect predictions and actuals
 
-    Returns dictionary of MAE/RMSE/MAPE and overflow metrics + calibration error.
+    Returns dictionary of MAE/MAPE and overflow metrics + calibration error.
     """
     n = len(series)
     if n < 2:
@@ -153,10 +125,7 @@ def rolling_backtest_for_series(
 
     metrics = {
         "mae": _safe(mae(trues, preds)),
-        "rmse": _safe(rmse(trues, preds)),
-        "mape": _safe(mape(trues, preds)),
         "overflow": overflow_metrics(currents, trues, preds, caps),
-        "calibration_error": _safe(calibration_error(trues, preds)),
     }
     return metrics
 
@@ -172,9 +141,7 @@ def rolling_backtest_all_bins(
     Returns aggregated metrics and per-bin summaries.
     """
     all_mae = []
-    all_rmse = []
-    all_mape = []
-    all_cal = []
+    # removed: tracking only MAE and overflow precision/recall
     # aggregate overflow counts
     agg_tp = agg_fp = agg_fn = 0.0
 
@@ -186,9 +153,8 @@ def rolling_backtest_all_bins(
             continue
         per_bin[bid] = res
         all_mae.append(res.get("mae", float('nan')))
-        all_rmse.append(res.get("rmse", float('nan')))
-        all_mape.append(res.get("mape", float('nan')))
-        all_cal.append(res.get("calibration_error", float('nan')))
+        # previously recorded per-bin RMSE; no longer collected
+        # mape and calibration removed
         ov = res.get("overflow", {})
         agg_tp += ov.get("tp", 0.0)
         agg_fp += ov.get("fp", 0.0)
@@ -208,12 +174,9 @@ def rolling_backtest_all_bins(
 
     summary = {
         "mae": _safe_mean(all_mae),
-        "rmse": _safe_mean(all_rmse),
-        "mape": _safe_mean(all_mape),
-        "calibration_error": _safe_mean(all_cal),
+        # rmse removed: only MAE is returned
         "overflow_precision": None if math.isnan(precision) else precision,
         "overflow_recall": None if math.isnan(recall) else recall,
-        "overflow_f1": None if (precision + recall) <= 0 else (2 * precision * recall / (precision + recall)),
         "per_bin": per_bin,
     }
     return summary

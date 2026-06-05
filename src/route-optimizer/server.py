@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import random
 import subprocess
 import sys
 from datetime import datetime
@@ -11,6 +12,7 @@ from io import StringIO
 from flask import Flask, Response, jsonify, send_from_directory
 
 from bin_health import build_city_context, compute_bin_health, predict_next_day_weight
+import waste_data as waste_data_module
 from global_city_model import training_city_count, training_row_count
 import forecast_evaluation as forecast_evaluation
 
@@ -112,6 +114,40 @@ def load_visualization_data() -> dict[str, object]:
     }
 
 
+def regenerate_waste_events_with_random_factor() -> dict[str, object]:
+    gen = generated_dir()
+    pois_file = gen / "pois.csv"
+    bins_file = gen / "bins.csv"
+    output_file = gen / "waste_events.csv"
+
+    if not pois_file.exists() or not bins_file.exists():
+        raise FileNotFoundError("Missing POI/bin inputs. Run generators first.")
+
+    pois = waste_data_module.load_pois(pois_file)
+    bins = waste_data_module.load_bins(bins_file)
+    if not pois:
+        raise ValueError("No POIs available for regeneration.")
+    if not bins:
+        raise ValueError("No bins available for regeneration.")
+
+    random_factor = round(random.uniform(0.35, 1.85), 2)
+    seed = random.randint(1, 1_000_000)
+    previous_factor = waste_data_module.GLOBAL_RANDOMNESS_FACTOR
+    waste_data_module.GLOBAL_RANDOMNESS_FACTOR = random_factor
+    try:
+        events = waste_data_module.generate_events(pois, bins, seed=seed)
+        waste_data_module.write_events(output_file, events)
+    finally:
+        waste_data_module.GLOBAL_RANDOMNESS_FACTOR = previous_factor
+
+    return {
+        "randomness_factor": random_factor,
+        "seed": seed,
+        "event_count": len(events),
+        "output": str(output_file),
+    }
+
+
 app = Flask(__name__)
 
 
@@ -119,6 +155,24 @@ app = Flask(__name__)
 def index() -> Response:
     static_dir = project_root() / "src" / "route-optimizer" / "static"
     return send_from_directory(str(static_dir), "bin_health.html")
+
+
+@app.get("/eval")
+def eval_dashboard() -> Response:
+    static_dir = project_root() / "src" / "route-optimizer" / "static"
+    return send_from_directory(str(static_dir), "eval_dashboard.html")
+
+
+@app.post("/api/randomize-data")
+def api_randomize_data() -> Response:
+    try:
+        payload = regenerate_waste_events_with_random_factor()
+    except (FileNotFoundError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": True, **payload})
 
 
 @app.get("/api/status")
@@ -171,7 +225,7 @@ def api_bin_health_csv() -> Response:
 def api_eval() -> Response:
     """Run rolling backtest evaluation over available bins.
 
-    Returns aggregated metrics (MAE/RMSE/MAPE), overflow precision/recall,
+    Returns aggregated metrics (MAE/MAPE), overflow precision/recall,
     calibration_error, and per-bin summaries where available.
     """
     try:

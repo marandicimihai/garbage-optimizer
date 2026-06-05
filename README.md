@@ -130,6 +130,13 @@ Files produced
 - `src/route-optimizer/generated/bins.csv` — computed bin locations
 - Per-bin `bin_health` predictions are available from the server API (`/api/status`) and surfaced in the map UI.
 
+Evaluation & metrics
+--------------------
+
+- The visualization server exposes a rolling-backtest evaluation at `/api/eval` and a lightweight evaluation dashboard at `/eval` (e.g. http://127.0.0.1:5002/eval).
+- The project now reports a single primary regression metric: **MAE** (mean absolute error) for next-day collected weight forecasts, plus overflow point-forecast statistics: **overflow precision** and **overflow recall**. Previous metrics (RMSE, MAPE, calibration error, F1) were removed and are no longer returned by the API or shown in the dashboard.
+
+
 Library versions (recommended)
 -----------------------------
 
