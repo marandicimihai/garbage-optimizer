@@ -49,6 +49,28 @@ Final training set statistics:
 
 The notebooks in `notebooks/` point to this merged dataset.
 
+Converting the model for the iOS app
+-----------------------------------
+
+The iOS app uses a CoreML model bundle named `ResNet.mlmodelc` (or the editable
+`ResNet.mlpackage`) placed under `src/Garbage/Garbage/`. A PyTorch checkpoint
+is available at `models/model.pth` and has been copied into the iOS app folder
+as `src/Garbage/Garbage/model.pth` for convenience.
+
+To produce the CoreML package locally (requires `coremltools`):
+
+```bash
+# activate your environment
+python -m pip install coremltools torch torchvision
+python src/Garbage/export_resnet50_coreml.py
+```
+
+This script will look for `models/best_resnet50.pth` or `models/model.pth` and
+save the CoreML package to `src/Garbage/Garbage/ResNet.mlpackage`. Add that
+package to the Xcode target (or build in Xcode which generates `.mlmodelc`).
+
+Note: the Swift `OfflineClassifier` expects `ResNet.mlmodelc` in the app bundle.
+
 How to run
 ----------
 

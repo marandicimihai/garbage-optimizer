@@ -26,16 +26,10 @@ enum ClassifierError: LocalizedError {
 
 final class OfflineClassifier {
     private let labels = [
-        "battery",
-        "biological",
-        "cardboard",
-        "clothes",
         "glass",
         "metal",
         "paper",
         "plastic",
-        "shoes",
-        "trash",
     ]
 
     private lazy var visionModel: VNCoreMLModel? = {

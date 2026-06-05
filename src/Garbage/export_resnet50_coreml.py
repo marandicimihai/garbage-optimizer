@@ -34,7 +34,11 @@ def build_model(num_classes: int) -> nn.Module:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
+    # Accept either models/best_resnet50.pth (original name) or models/model.pth (new)
     checkpoint_path = repo_root / "models" / "best_resnet50.pth"
+    alt_path = repo_root / "models" / "model.pth"
+    if not checkpoint_path.exists() and alt_path.exists():
+        checkpoint_path = alt_path
     output_path = repo_root / "src" / "Garbage" / "Garbage" / "ResNet.mlpackage"
 
     if not checkpoint_path.exists():
