@@ -66,6 +66,10 @@ final class OfflineClassifier {
                     }
 
                     let (index, confidence) = self.topClass(in: scores)
+                    guard index >= 0 && index < labels.count else {
+                        continuation.resume(returning: .failure(ClassifierError.predictionFailed))
+                        return
+                    }
                     let label = labels[index]
                     continuation.resume(returning: .success(ClassifierOutput(label: label, confidence: confidence)))
                 }

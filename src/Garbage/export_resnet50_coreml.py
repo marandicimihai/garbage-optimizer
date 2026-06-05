@@ -7,16 +7,10 @@ from torchvision import models
 
 
 CLASS_NAMES = [
-    "battery",
-    "biological",
-    "cardboard",
-    "clothes",
     "glass",
     "metal",
     "paper",
     "plastic",
-    "shoes",
-    "trash",
 ]
 
 
@@ -34,19 +28,41 @@ def build_model(num_classes: int) -> nn.Module:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    # Accept either models/best_resnet50.pth (original name) or models/model.pth (new)
-    checkpoint_path = repo_root / "models" / "best_resnet50.pth"
-    alt_path = repo_root / "models" / "model.pth"
-    if not checkpoint_path.exists() and alt_path.exists():
-        checkpoint_path = alt_path
+    # Prefer models/model.pth if present (new 4-class checkpoint); fall back to best_resnet50.pth
+    model_pth = repo_root / "models" / "model.pth"
+    best_pth = repo_root / "models" / "best_resnet50.pth"
+    if model_pth.exists():
+        checkpoint_path = model_pth
+    else:
+        checkpoint_path = best_pth
     output_path = repo_root / "src" / "Garbage" / "Garbage" / "ResNet.mlpackage"
 
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
-    model = build_model(len(CLASS_NAMES))
-    model.load_state_dict(state_dict)
+    try:
+        loaded = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        # older torch versions don't accept weights_only
+        loaded = torch.load(checkpoint_path, map_location="cpu")
+
+    # The checkpoint may be a full nn.Module object or a state_dict/dict wrapper.
+    if isinstance(loaded, dict):
+        # extract nested state_dict if present
+        state_dict = None
+        for key in ("model_state", "state_dict", "state"):
+            if key in loaded:
+                state_dict = loaded[key]
+                break
+        if state_dict is None:
+            state_dict = loaded
+
+        model = build_model(len(CLASS_NAMES))
+        model.load_state_dict(state_dict)
+    else:
+        # assume it's a serialized nn.Module
+        model = loaded
+
     model.eval()
 
     example_input = torch.rand(1, 3, 224, 224)
